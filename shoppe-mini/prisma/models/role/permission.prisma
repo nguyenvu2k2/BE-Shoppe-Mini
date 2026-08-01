@@ -1,0 +1,11 @@
+model Permission {
+  id          Int    @id @default(autoincrement())
+
+  name        String @unique
+
+  description String?
+
+  rolePermissions RolePermission[]
+
+  @@map("permissions")
+}

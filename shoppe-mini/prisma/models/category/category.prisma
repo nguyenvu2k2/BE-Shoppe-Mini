@@ -1,0 +1,10 @@
+model Category {
+  id Int @id @default(autoincrement())
+  parentId Int? @map("parent_id")
+
+  name String 
+  slug String? @unique
+  image String? 
+
+  @@map("categories")
+}

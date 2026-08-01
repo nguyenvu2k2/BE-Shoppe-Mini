@@ -3,12 +3,15 @@ import { AppController } from './app.controller';
 import { AppService } from './app.service';
 import { LoggerModule } from 'nestjs-pino';
 import { ConfigModule, ConfigService } from '@nestjs/config';
+import { PrismaModule } from './prisma/prisma.module';
+import { AuthModule } from './modules/auth/auth.module';
+import { UserModule } from './modules/user/user.module';
 
 @Module({
   imports: [
     ConfigModule.forRoot({
       isGlobal: true,
-      envFilePath: '.env',
+      envFilePath: ['.env'],
       cache: true,
     }),
     LoggerModule.forRootAsync({
@@ -16,24 +19,26 @@ import { ConfigModule, ConfigService } from '@nestjs/config';
       inject: [ConfigService],
       useFactory: (configService: ConfigService) => ({
         pinoHttp: {
-          level:
-            configService.get('NODE_ENV') !== 'production' ? 'debug' : 'info',
+          level: configService.get('NODE_ENV') !== 'production' ? 'debug' : 'info',
           transport:
             configService.get('NODE_ENV') !== 'production'
               ? {
-                  target: 'pino-pretty',
-                  options: {
-                    singleLine: true,
-                    colorize: true,
-                    translateTime: 'SYS:standard',
-                  },
-                }
+                target: 'pino-pretty',
+                options: {
+                  singleLine: true,
+                  colorize: true,
+                  translateTime: 'SYS:standard',
+                },
+              }
               : undefined,
         },
       }),
     }),
+    PrismaModule,
+    UserModule,
+    AuthModule,
   ],
   controllers: [AppController],
   providers: [AppService],
 })
-export class AppModule {}
+export class AppModule { }

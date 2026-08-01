@@ -1,0 +1,21 @@
+model User {
+  id           Int      @id @default(autoincrement())
+
+  fullName     String   @map("full_name")
+  email        String   @unique
+  passwordHash String   @map("password_hash")
+
+  phone        String?
+  avatar       String?
+  googleId     String?  @unique @map("google_id")
+
+  roleId       Int      @map("role_id")
+  role         Role     @relation(fields: [roleId], references: [id])
+
+  createdAt    DateTime @default(now()) @map("created_at")
+
+  refreshTokens RefreshToken[] @relation("UserRefreshTokens")
+  sessions      Session[] @relation("UserSessions")
+
+  @@map("users")
+}
