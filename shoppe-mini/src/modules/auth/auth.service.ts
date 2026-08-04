@@ -4,6 +4,14 @@ import { UserService } from '../user/user.service';
 import { PrismaService } from '../../prisma/prisma.service';
 import { RegisterDto } from '../../common/dto/auth/register.dto';
 import { JwtService } from '@nestjs/jwt';
+import { OAuth2Client } from 'google-auth-library';
+
+type AuthenticatedUser = {
+  id: number;
+  email: string;
+  fullName: string;
+  role: { name: string } | null;
+};
 
 @Injectable()
 export class AuthService {
@@ -15,7 +23,7 @@ export class AuthService {
 
   //Register a new user
   async register(registerDto: RegisterDto) {
-    const { email, passwordHash, fullName } = registerDto;
+    const { email, password, fullName } = registerDto;
 
     const role = await this.prisma.role.findFirst({
       where: { name: 'CUSTOMER' },
@@ -33,7 +41,7 @@ export class AuthService {
       throw new Error('User with this email already exists');
     }
 
-    const hashPassword = await bcrypt.hash(passwordHash as string, 10);
+    const hashPassword = await bcrypt.hash(password as string, 10);
 
     const user = await this.prisma.user.create({
       data: {
@@ -78,6 +86,87 @@ export class AuthService {
       throw new UnauthorizedException('Invalid credentials');
     }
 
+    return this.issueTokens(user);
+  }
+
+  // Find or create a user from a Google profile, then issue tokens for them
+  async validateGoogleUser(code: string, redirectUri: string) {
+    const client = new OAuth2Client(
+      process.env.GOOGLE_CLIENT_ID,
+      process.env.GOOGLE_CLIENT_SECRET,
+      redirectUri
+    );
+
+    const { tokens } = await client.getToken(code);
+    const idToken = tokens.id_token;
+    if (!idToken) {
+      throw new UnauthorizedException('Invalid Google token');
+    }
+
+    const ticket = await client.verifyIdToken({
+      idToken,
+      audience: process.env.GOOGLE_CLIENT_ID,
+    });
+
+    const payload = ticket.getPayload();
+    if (!payload?.email) {
+      throw new UnauthorizedException('Google account has no email');
+    }
+
+    const googleId = payload.sub;
+    const email = payload.email;
+    const avatar = payload.picture;
+    const fullName = payload.name || email;
+
+    const byGoogleId = await this.prisma.user.findUnique({
+      where: { googleId },
+      include: { role: true },
+    })
+
+    if (byGoogleId) {
+      return byGoogleId;
+    }
+
+    const byEmail = await this.prisma.user.findUnique({
+      where: { email },
+      include: { role: true },
+    });
+
+    if (byEmail) {
+      return this.prisma.user.update({
+        where: { id: byEmail.id },
+        data: { googleId, avatar: byEmail.avatar ?? avatar, fullName: byEmail.fullName ?? fullName },
+        include: { role: true },
+      });
+    }
+
+    const role = await this.prisma.role.findFirst({
+      where: { name: 'CUSTOMER' },
+    });
+
+    if (!role) {
+      throw new Error('Role CUSTOMER not found');
+    }
+
+    return this.prisma.user.create({
+      data: {
+        email,
+        googleId,
+        avatar,
+        fullName,
+        role: { connect: { id: role.id } },
+      },
+      include: {
+        role: true
+      }
+    })
+  }
+
+  signInWithUser(user: AuthenticatedUser) {
+    return this.issueTokens(user);
+  }
+
+  private issueTokens(user: AuthenticatedUser) {
     const payload = {
       sub: user.id,
       email: user.email,
@@ -89,7 +178,7 @@ export class AuthService {
     });
 
     const refreshToken = this.jwtService.sign(payload, {
-      expiresIn: '7d'
+      expiresIn: '7d',
     });
 
     return {
@@ -115,6 +204,8 @@ export class AuthService {
       where: { id: id },
     })
   }
+
+
 
   signOut() {
     return {

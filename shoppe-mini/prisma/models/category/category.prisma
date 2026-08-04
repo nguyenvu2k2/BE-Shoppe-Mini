@@ -2,9 +2,17 @@ model Category {
   id Int @id @default(autoincrement())
   parentId Int? @map("parent_id")
 
-  name String 
+  name String
   slug String? @unique
-  image String? 
+  image String?
 
+  parent   Category?  @relation("CategoryTree", fields: [parentId], references: [id])
+  children Category[] @relation("CategoryTree")
+
+  createdAt DateTime  @default(now()) @map("created_at")
+  updatedAt DateTime  @updatedAt @map("updated_at")
+  deletedAt DateTime? @map("deleted_at")
+
+  @@index([parentId])
   @@map("categories")
 }

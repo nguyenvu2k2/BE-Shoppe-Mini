@@ -6,7 +6,7 @@ export class RegisterDto {
 
   @IsNotEmpty()
   @MinLength(6)
-  passwordHash: string | undefined;
+  password: string | undefined;
 
   @IsNotEmpty()
   fullName: string | undefined;
