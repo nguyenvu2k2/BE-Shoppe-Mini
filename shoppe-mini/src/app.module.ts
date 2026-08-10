@@ -5,7 +5,10 @@ import { LoggerModule } from 'nestjs-pino';
 import { ConfigModule, ConfigService } from '@nestjs/config';
 import { PrismaModule } from './prisma/prisma.module';
 import { AuthModule } from './modules/auth/auth.module';
+import { MailModule } from './modules/mail/mail.module';
 import { UserModule } from './modules/user/user.module';
+import { AddressModule } from './modules/address/address.module';
+import { FileModule } from './modules/files/file.module';
 
 @Module({
   imports: [
@@ -35,8 +38,11 @@ import { UserModule } from './modules/user/user.module';
       }),
     }),
     PrismaModule,
+    MailModule,
     UserModule,
+    AddressModule,
     AuthModule,
+    FileModule,
   ],
   controllers: [AppController],
   providers: [AppService],

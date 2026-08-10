@@ -1,10 +1,16 @@
-import { Injectable, UnauthorizedException } from '@nestjs/common';
+import { BadRequestException, Injectable, InternalServerErrorException, Logger, UnauthorizedException } from '@nestjs/common';
 import * as bcrypt from 'bcrypt';
+import { createHash, randomBytes } from 'crypto';
+import { ConfigService } from '@nestjs/config';
 import { UserService } from '../user/user.service';
 import { PrismaService } from '../../prisma/prisma.service';
 import { RegisterDto } from '../../common/dto/auth/register.dto';
 import { JwtService } from '@nestjs/jwt';
 import { OAuth2Client } from 'google-auth-library';
+import { MailService } from '../mail/mail.service';
+
+const PASSWORD_RESET_MESSAGE =
+  'If that email is registered, you will receive a password reset link shortly.';
 
 type AuthenticatedUser = {
   id: number;
@@ -15,10 +21,14 @@ type AuthenticatedUser = {
 
 @Injectable()
 export class AuthService {
+  private readonly logger = new Logger(AuthService.name);
+
   constructor(
     private readonly userService: UserService,
     private prisma: PrismaService,
     private readonly jwtService: JwtService,
+    private readonly mailService: MailService,
+    private readonly configService: ConfigService,
   ) { }
 
   //Register a new user
@@ -205,7 +215,83 @@ export class AuthService {
     })
   }
 
+  async forgotPassword(email: string) {
+    const user = await this.prisma.user.findUnique({ where: { email } });
 
+    if (!user) {
+      this.logger.debug(`Forgot password: no user for ${email}`);
+      return { message: PASSWORD_RESET_MESSAGE };
+    }
+
+    if (!user.passwordHash) {
+      this.logger.debug(
+        `Forgot password: ${email} has no local password (Google-only account) — email not sent`,
+      );
+      return { message: PASSWORD_RESET_MESSAGE };
+    }
+
+    await this.prisma.passwordResetToken.updateMany({
+      where: { userId: user.id, usedAt: null },
+      data: { usedAt: new Date() },
+    });
+
+    const plainToken = randomBytes(32).toString('hex');
+    const tokenHash = createHash('sha256').update(plainToken).digest('hex');
+    const expiryMinutes = Number(
+      this.configService.get('PASSWORD_RESET_EXPIRY_MINUTES') ?? 30,
+    );
+
+    await this.prisma.passwordResetToken.create({
+      data: {
+        userId: user.id,
+        tokenHash,
+        expiresAt: new Date(Date.now() + expiryMinutes * 60 * 1000),
+      },
+    });
+
+    const frontendUrl = this.configService.getOrThrow<string>('FRONTEND_URL');
+    const resetUrl = new URL('/reset-password', frontendUrl);
+    resetUrl.searchParams.set('token', plainToken);
+
+    await this.mailService.sendPasswordResetEmail(user.email, resetUrl.toString());
+
+    return { message: PASSWORD_RESET_MESSAGE };
+  }
+
+  async resetPassword(token: string, newPassword: string) {
+    const tokenHash = createHash('sha256').update(token).digest('hex');
+
+    const resetToken = await this.prisma.passwordResetToken.findFirst({
+      where: {
+        tokenHash,
+        usedAt: null,
+        expiresAt: { gt: new Date() },
+      },
+    });
+
+    if (!resetToken) {
+      throw new BadRequestException('Invalid or expired reset token');
+    }
+
+    const passwordHash = await bcrypt.hash(newPassword, 10);
+
+    await this.prisma.$transaction([
+      this.prisma.user.update({
+        where: { id: resetToken.userId },
+        data: { passwordHash },
+      }),
+      this.prisma.passwordResetToken.update({
+        where: { id: resetToken.id },
+        data: { usedAt: new Date() },
+      }),
+      this.prisma.refreshToken.updateMany({
+        where: { userId: resetToken.userId, revokedAt: null },
+        data: { revokedAt: new Date() },
+      }),
+    ]);
+
+    return { message: 'Password reset successfully. You can sign in with your new password.' };
+  }
 
   signOut() {
     return {

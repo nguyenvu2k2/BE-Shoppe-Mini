@@ -16,8 +16,10 @@ model User {
   updatedAt    DateTime  @updatedAt @map("updated_at")
   deletedAt    DateTime? @map("deleted_at")
 
-  refreshTokens RefreshToken[] @relation("UserRefreshTokens")
-  sessions      Session[] @relation("UserSessions")
+  addresses           Address[]
+  refreshTokens       RefreshToken[]       @relation("UserRefreshTokens")
+  sessions            Session[]            @relation("UserSessions")
+  passwordResetTokens PasswordResetToken[] @relation("UserPasswordResetTokens")
 
   @@index([roleId])
   @@map("users")

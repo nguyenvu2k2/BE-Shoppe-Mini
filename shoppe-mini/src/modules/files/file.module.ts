@@ -1,9 +1,10 @@
-import { Module } from '@nestjs/common';
+import { Global, Module } from '@nestjs/common';
 import { ConfigModule, ConfigService } from '@nestjs/config';
 import { JwtModule } from '@nestjs/jwt';
-import { UserController } from './user.controller';
-import { UserService } from './user.service';
+import { FileController } from './file.controller';
+import { FileService } from './file.service';
 
+@Global()
 @Module({
   imports: [
     JwtModule.registerAsync({
@@ -15,8 +16,8 @@ import { UserService } from './user.service';
       }),
     }),
   ],
-  controllers: [UserController],
-  providers: [UserService],
-  exports: [UserService],
+  controllers: [FileController],
+  providers: [FileService],
+  exports: [FileService],
 })
-export class UserModule {}
+export class FileModule {}
