@@ -3,15 +3,13 @@ import {
   Controller,
   Post,
   Query,
-  Req,
   UploadedFile,
+  UseGuards,
   UseInterceptors,
 } from '@nestjs/common';
 import { FileInterceptor } from '@nestjs/platform-express';
-import { JwtService } from '@nestjs/jwt';
 import { memoryStorage } from 'multer';
-import { getUserIdFromCookie } from '../../common/auth/get-user-id-from-cookie';
-import type { RequestWithCookies } from '../../common/auth/request-with-cookies.type';
+import { AuthGuard } from '../../common/auth/auth.guard';
 import { FileService } from './file.service';
 import {
   S3_ALLOWED_FOLDERS,
@@ -22,11 +20,9 @@ import {
 } from './s3.constants';
 
 @Controller('files')
+@UseGuards(AuthGuard)
 export class FileController {
-  constructor(
-    private readonly fileService: FileService,
-    private readonly jwtService: JwtService,
-  ) {}
+  constructor(private readonly fileService: FileService) {}
 
   /**
    * POST /files/upload?folder=avatars
@@ -55,13 +51,9 @@ export class FileController {
     }),
   )
   async upload(
-    @Req() req: RequestWithCookies,
     @UploadedFile() file: Express.Multer.File,
     @Query('folder') folder?: string,
   ) {
-    // Auth first — reject anonymous uploads even if multipart parsing succeeded
-    getUserIdFromCookie(req, this.jwtService);
-
     if (!file) {
       throw new BadRequestException('File is required (multipart field: file)');
     }

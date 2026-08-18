@@ -1,4 +1,9 @@
-import { BadRequestException, Injectable, InternalServerErrorException, Logger, UnauthorizedException } from '@nestjs/common';
+import {
+  BadRequestException,
+  Injectable,
+  Logger,
+  UnauthorizedException,
+} from '@nestjs/common';
 import * as bcrypt from 'bcrypt';
 import { createHash, randomBytes } from 'crypto';
 import { ConfigService } from '@nestjs/config';
@@ -12,11 +17,18 @@ import { MailService } from '../mail/mail.service';
 const PASSWORD_RESET_MESSAGE =
   'If that email is registered, you will receive a password reset link shortly.';
 
+const REFRESH_TOKEN_TTL_MS = 7 * 24 * 60 * 60 * 1000; // 7d
+
 type AuthenticatedUser = {
   id: number;
   email: string;
   fullName: string;
   role: { name: string } | null;
+};
+
+export type SessionMeta = {
+  ipAddress?: string;
+  userAgent?: string;
 };
 
 @Injectable()
@@ -29,7 +41,7 @@ export class AuthService {
     private readonly jwtService: JwtService,
     private readonly mailService: MailService,
     private readonly configService: ConfigService,
-  ) { }
+  ) {}
 
   //Register a new user
   async register(registerDto: RegisterDto) {
@@ -75,12 +87,12 @@ export class AuthService {
     });
 
     if (!user?.passwordHash) {
-      return new UnauthorizedException("Invalid email or password");
+      return new UnauthorizedException('Invalid email or password');
     }
 
     const isPasswordValid = await bcrypt.compare(password, user.passwordHash);
     if (!isPasswordValid) {
-      throw new UnauthorizedException("Invalid email or password");
+      throw new UnauthorizedException('Invalid email or password');
     }
 
     const { passwordHash: _passwordHash, ...result } = user;
@@ -89,14 +101,17 @@ export class AuthService {
   }
 
   // Sign in a user and return a JWT token
-  async signIn(signDto: { id: number, email: string, role: number }) {
+  async signIn(
+    signDto: { id: number; email: string; role: number },
+    meta?: SessionMeta,
+  ) {
     const user = await this.userService.findByEmail(signDto.email);
 
     if (!user) {
       throw new UnauthorizedException('Invalid credentials');
     }
 
-    return this.issueTokens(user);
+    return this.issueTokens(user, meta);
   }
 
   // Find or create a user from a Google profile, then issue tokens for them
@@ -104,7 +119,7 @@ export class AuthService {
     const client = new OAuth2Client(
       process.env.GOOGLE_CLIENT_ID,
       process.env.GOOGLE_CLIENT_SECRET,
-      redirectUri
+      redirectUri,
     );
 
     const { tokens } = await client.getToken(code);
@@ -131,7 +146,7 @@ export class AuthService {
     const byGoogleId = await this.prisma.user.findUnique({
       where: { googleId },
       include: { role: true },
-    })
+    });
 
     if (byGoogleId) {
       return byGoogleId;
@@ -145,7 +160,11 @@ export class AuthService {
     if (byEmail) {
       return this.prisma.user.update({
         where: { id: byEmail.id },
-        data: { googleId, avatar: byEmail.avatar ?? avatar, fullName: byEmail.fullName ?? fullName },
+        data: {
+          googleId,
+          avatar: byEmail.avatar ?? avatar,
+          fullName: byEmail.fullName ?? fullName,
+        },
         include: { role: true },
       });
     }
@@ -167,16 +186,71 @@ export class AuthService {
         role: { connect: { id: role.id } },
       },
       include: {
-        role: true
-      }
-    })
+        role: true,
+      },
+    });
   }
 
-  signInWithUser(user: AuthenticatedUser) {
-    return this.issueTokens(user);
+  signInWithUser(user: AuthenticatedUser, meta?: SessionMeta) {
+    return this.issueTokens(user, meta);
   }
 
-  private issueTokens(user: AuthenticatedUser) {
+  /**
+   * Rotate refresh token: revoke the current DB row, issue a new pair,
+   * and point the same Session at the new refresh token.
+   */
+  async refresh(plainRefreshToken: string, meta?: SessionMeta) {
+    let jwtPayload: { sub: number };
+    try {
+      jwtPayload = this.jwtService.verify<{ sub: number }>(plainRefreshToken);
+    } catch {
+      throw new UnauthorizedException('Invalid token');
+    }
+
+    const tokenHash = this.hashToken(plainRefreshToken);
+
+    const stored = await this.prisma.refreshToken.findFirst({
+      where: {
+        token: tokenHash,
+        revokedAt: null,
+        expiresAt: { gt: new Date() },
+      },
+      include: { session: true },
+    });
+
+    if (!stored || stored.userId !== jwtPayload.sub) {
+      throw new UnauthorizedException('Invalid or revoked refresh token');
+    }
+
+    const user = await this.prisma.user.findFirst({
+      where: { id: stored.userId, deletedAt: null },
+      include: { role: true },
+    });
+
+    if (!user) {
+      throw new UnauthorizedException('User not found');
+    }
+
+    return this.issueTokens(
+      {
+        id: user.id,
+        email: user.email,
+        fullName: user.fullName,
+        role: user.role ? { name: user.role.name } : null,
+      },
+      meta,
+      {
+        sessionId: stored.session?.id,
+        revokeRefreshTokenId: stored.id,
+      },
+    );
+  }
+
+  private async issueTokens(
+    user: AuthenticatedUser,
+    meta?: SessionMeta,
+    rotation?: { sessionId?: number; revokeRefreshTokenId?: number },
+  ) {
     const payload = {
       sub: user.id,
       email: user.email,
@@ -189,6 +263,53 @@ export class AuthService {
 
     const refreshToken = this.jwtService.sign(payload, {
       expiresIn: '7d',
+    });
+
+    const refreshExpiresAt = new Date(Date.now() + REFRESH_TOKEN_TTL_MS);
+
+    await this.prisma.$transaction(async (tx) => {
+      if (rotation?.revokeRefreshTokenId) {
+        const revoked = await tx.refreshToken.updateMany({
+          where: { id: rotation.revokeRefreshTokenId, revokedAt: null },
+          data: { revokedAt: new Date() },
+        });
+
+        // Concurrent refresh already consumed this token.
+        if (revoked.count === 0) {
+          throw new UnauthorizedException('Invalid or revoked refresh token');
+        }
+      }
+
+      const created = await tx.refreshToken.create({
+        data: {
+          token: this.hashToken(refreshToken),
+          userId: user.id,
+          expiresAt: refreshExpiresAt,
+        },
+      });
+
+      if (rotation?.sessionId) {
+        await tx.session.update({
+          where: { id: rotation.sessionId },
+          data: {
+            refreshTokenId: created.id,
+            lastActiveAt: new Date(),
+            expiresAt: refreshExpiresAt,
+            ...(meta?.ipAddress !== undefined && { ipAddress: meta.ipAddress }),
+            ...(meta?.userAgent !== undefined && { userAgent: meta.userAgent }),
+          },
+        });
+      } else {
+        await tx.session.create({
+          data: {
+            userId: user.id,
+            refreshTokenId: created.id,
+            ipAddress: meta?.ipAddress,
+            userAgent: meta?.userAgent,
+            expiresAt: refreshExpiresAt,
+          },
+        });
+      }
     });
 
     return {
@@ -206,13 +327,45 @@ export class AuthService {
   verifyToken(token: string) {
     try {
       return this.jwtService.verify<{ sub: number }>(token);
-    } catch { throw new UnauthorizedException('Invalid token'); }
+    } catch {
+      throw new UnauthorizedException('Invalid token');
+    }
   }
 
   findUserById(id: number) {
     return this.prisma.user.findUnique({
       where: { id: id },
-    })
+    });
+  }
+
+  async getPermissionsForUser(userId: number) {
+    const user = await this.prisma.user.findFirst({
+      where: { id: userId, deletedAt: null },
+      select: {
+        role: {
+          select: {
+            name: true,
+            rolePermissions: {
+              select: {
+                permission: { select: { name: true, description: true } },
+              },
+            },
+          },
+        },
+      },
+    });
+
+    if (!user) {
+      return null;
+    }
+
+    return {
+      role: user.role.name,
+      permissions: user.role.rolePermissions.map((rp) => ({
+        name: rp.permission.name,
+        description: rp.permission.description,
+      })),
+    };
   }
 
   async forgotPassword(email: string) {
@@ -274,6 +427,7 @@ export class AuthService {
     }
 
     const passwordHash = await bcrypt.hash(newPassword, 10);
+    const now = new Date();
 
     await this.prisma.$transaction([
       this.prisma.user.update({
@@ -282,31 +436,62 @@ export class AuthService {
       }),
       this.prisma.passwordResetToken.update({
         where: { id: resetToken.id },
-        data: { usedAt: new Date() },
+        data: { usedAt: now },
       }),
       this.prisma.refreshToken.updateMany({
         where: { userId: resetToken.userId, revokedAt: null },
-        data: { revokedAt: new Date() },
+        data: { revokedAt: now },
+      }),
+      this.prisma.session.updateMany({
+        where: { userId: resetToken.userId, expiresAt: { gt: now } },
+        data: { expiresAt: now },
       }),
     ]);
 
-    return { message: 'Password reset successfully. You can sign in with your new password.' };
-  }
-
-  signOut() {
     return {
-      message: 'Signed out successfully',
+      message: 'Password reset successfully. You can sign in with your new password.',
     };
   }
 
-  private generateToken(payload: Record<string, unknown>) {
-    const base64Header = Buffer.from(JSON.stringify({ alg: 'HS256', typ: 'JWT' })).toString(
-      'base64url',
-    );
-    const base64Payload = Buffer.from(JSON.stringify(payload)).toString('base64url');
-    const signature = Buffer.from(`${base64Header}.${base64Payload}.dev-signature`).toString(
-      'base64url',
-    );
-    return `${base64Header}.${base64Payload}.${signature}`;
+  /**
+   * Revoke the refresh token (and expire its session) for the current device.
+   * Idempotent if the cookie is already missing/invalid.
+   */
+  async signOut(plainRefreshToken?: string) {
+    if (!plainRefreshToken) {
+      return { message: 'Signed out successfully' };
+    }
+
+    const tokenHash = this.hashToken(plainRefreshToken);
+    const stored = await this.prisma.refreshToken.findFirst({
+      where: { token: tokenHash, revokedAt: null },
+      include: { session: true },
+    });
+
+    if (!stored) {
+      return { message: 'Signed out successfully' };
+    }
+
+    const now = new Date();
+
+    await this.prisma.$transaction(async (tx) => {
+      await tx.refreshToken.update({
+        where: { id: stored.id },
+        data: { revokedAt: now },
+      });
+
+      if (stored.session) {
+        await tx.session.update({
+          where: { id: stored.session.id },
+          data: { expiresAt: now },
+        });
+      }
+    });
+
+    return { message: 'Signed out successfully' };
+  }
+
+  private hashToken(token: string) {
+    return createHash('sha256').update(token).digest('hex');
   }
 }

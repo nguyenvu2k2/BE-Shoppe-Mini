@@ -17,6 +17,8 @@ model User {
   deletedAt    DateTime? @map("deleted_at")
 
   addresses           Address[]
+  cart                Cart?
+  orders              Order[]
   refreshTokens       RefreshToken[]       @relation("UserRefreshTokens")
   sessions            Session[]            @relation("UserSessions")
   passwordResetTokens PasswordResetToken[] @relation("UserPasswordResetTokens")

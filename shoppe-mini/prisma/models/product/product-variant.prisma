@@ -1,0 +1,20 @@
+model ProductVariant {
+  id Int @id @default(autoincrement())
+
+  productId Int @map("product_id")
+  product   Product @relation(fields: [productId], references: [id], onDelete: Cascade)
+
+  name  String
+  sku   String  @unique
+  price Decimal @db.Decimal(12, 2)
+
+  inventory  Inventory?
+  cartItems  CartItem[]
+  orderItems OrderItem[]
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@index([productId])
+  @@map("product_variants")
+}

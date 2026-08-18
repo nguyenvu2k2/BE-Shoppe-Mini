@@ -1,0 +1,32 @@
+model Payment {
+  id Int @id @default(autoincrement())
+
+  orderId Int   @map("order_id")
+  order   Order @relation(fields: [orderId], references: [id], onDelete: Cascade)
+
+  method PaymentMethod
+  status PaymentTxnStatus @default(PENDING)
+
+  amount Decimal @db.Decimal(12, 2)
+
+  /// Merchant ref sent to VNPay as vnp_TxnRef. Unique per attempt; null for COD.
+  txnRef String? @unique @map("txn_ref")
+
+  /// Gateway id (vnp_TransactionNo). Null until IPN succeeds.
+  transactionId String? @map("transaction_id")
+
+  bankCode     String? @map("bank_code")
+  responseCode String? @map("response_code")
+
+  /// Raw IPN/return payload for reconciliation.
+  rawPayload Json? @map("raw_payload")
+
+  paidAt DateTime? @map("paid_at")
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@index([orderId])
+  @@index([status])
+  @@map("payments")
+}

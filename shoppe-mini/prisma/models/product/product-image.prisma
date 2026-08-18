@@ -1,0 +1,14 @@
+model ProductImage {
+  id Int @id @default(autoincrement())
+
+  productId Int @map("product_id")
+  product   Product @relation(fields: [productId], references: [id], onDelete: Cascade)
+
+  url       String
+  sortOrder Int @default(0) @map("sort_order")
+
+  createdAt DateTime @default(now()) @map("created_at")
+
+  @@index([productId])
+  @@map("product_images")
+}

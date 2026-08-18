@@ -94,6 +94,7 @@ export class UserService {
     }
 
     const passwordHash = await bcrypt.hash(newPassword, 10);
+    const now = new Date();
 
     await this.prisma.$transaction([
       this.prisma.user.update({
@@ -102,7 +103,11 @@ export class UserService {
       }),
       this.prisma.refreshToken.updateMany({
         where: { userId: id, revokedAt: null },
-        data: { revokedAt: new Date() },
+        data: { revokedAt: now },
+      }),
+      this.prisma.session.updateMany({
+        where: { userId: id, expiresAt: { gt: now } },
+        data: { expiresAt: now },
       }),
     ]);
 

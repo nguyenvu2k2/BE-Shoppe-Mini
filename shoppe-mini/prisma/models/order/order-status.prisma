@@ -1,0 +1,28 @@
+enum OrderStatus {
+  PENDING
+  CONFIRMED
+  SHIPPING
+  COMPLETED
+  CANCELLED
+}
+
+enum PaymentStatus {
+  UNPAID
+  PAID
+  FAILED
+  REFUNDED
+}
+
+enum PaymentMethod {
+  COD
+  BANK_TRANSFER
+  VNPAY
+}
+
+/// Per-attempt ledger status. Order.paymentStatus stays the summary (UNPAID/PAID/…).
+enum PaymentTxnStatus {
+  PENDING
+  PAID
+  FAILED
+  REFUNDED
+}

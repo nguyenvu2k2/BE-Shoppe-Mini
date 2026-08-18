@@ -5,18 +5,17 @@ import {
   Get,
   Patch,
   Post,
-  Req,
   UnauthorizedException,
   UploadedFile,
+  UseGuards,
   UseInterceptors,
   UsePipes,
   ValidationPipe,
 } from '@nestjs/common';
 import { FileInterceptor } from '@nestjs/platform-express';
-import { JwtService } from '@nestjs/jwt';
 import { memoryStorage } from 'multer';
-import { getUserIdFromCookie } from '../../common/auth/get-user-id-from-cookie';
-import type { RequestWithCookies } from '../../common/auth/request-with-cookies.type';
+import { AuthGuard } from '../../common/auth/auth.guard';
+import { CurrentUser } from '../../common/auth/current-user.decorator';
 import { UpdateProfileDto } from '../../common/dto/user/update-profile.dto';
 import { ChangePasswordDto } from '../../common/dto/user/change-password.dto';
 import { UserService } from './user.service';
@@ -27,16 +26,13 @@ import {
 } from '../files/s3.constants';
 
 @Controller('users')
+@UseGuards(AuthGuard)
 @UsePipes(new ValidationPipe({ whitelist: true, forbidNonWhitelisted: true }))
 export class UserController {
-  constructor(
-    private readonly userService: UserService,
-    private readonly jwtService: JwtService,
-  ) {}
+  constructor(private readonly userService: UserService) {}
 
   @Get('me')
-  async getMe(@Req() req: RequestWithCookies) {
-    const userId = getUserIdFromCookie(req, this.jwtService);
+  async getMe(@CurrentUser('sub') userId: number) {
     const profile = await this.userService.getProfileById(userId);
 
     if (!profile) {
@@ -47,8 +43,10 @@ export class UserController {
   }
 
   @Patch('me')
-  async updateMe(@Req() req: RequestWithCookies, @Body() dto: UpdateProfileDto) {
-    const userId = getUserIdFromCookie(req, this.jwtService);
+  async updateMe(
+    @CurrentUser('sub') userId: number,
+    @Body() dto: UpdateProfileDto,
+  ) {
     const profile = await this.userService.updateProfile(userId, dto);
 
     if (!profile) {
@@ -59,8 +57,10 @@ export class UserController {
   }
 
   @Patch('me/password')
-  async changePassword(@Req() req: RequestWithCookies, @Body() dto: ChangePasswordDto) {
-    const userId = getUserIdFromCookie(req, this.jwtService);
+  async changePassword(
+    @CurrentUser('sub') userId: number,
+    @Body() dto: ChangePasswordDto,
+  ) {
     const result = await this.userService.changePassword(
       userId,
       dto.currentPassword,
@@ -94,11 +94,9 @@ export class UserController {
     }),
   )
   async updateAvatar(
-    @Req() req: RequestWithCookies,
+    @CurrentUser('sub') userId: number,
     @UploadedFile() file: Express.Multer.File,
   ) {
-    const userId = getUserIdFromCookie(req, this.jwtService);
-
     if (!file) {
       throw new BadRequestException('File is required (multipart field: file)');
     }
@@ -112,4 +110,3 @@ export class UserController {
     return profile;
   }
 }
-

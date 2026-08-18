@@ -13,6 +13,8 @@ model Address {
 
   isDefault Boolean @default(false) @map("is_default")
 
+  orders Order[]
+
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt @map("updated_at")
 

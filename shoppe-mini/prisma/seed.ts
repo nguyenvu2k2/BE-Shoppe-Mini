@@ -1,6 +1,7 @@
 import { prisma } from './seeds';
 import { roleSeed } from './seeds/role.seed';
 import { permissionSeed } from './seeds/permission.seed';
+import { rolePermissionSeed } from './seeds/role-permission.seed';
 import { categorySeed } from './seeds/category.seed';
 import { userSeed } from './seeds/user.seed';
 
@@ -10,6 +11,8 @@ async function main() {
   await roleSeed();
 
   await permissionSeed();
+
+  await rolePermissionSeed();
 
   await categorySeed();
 

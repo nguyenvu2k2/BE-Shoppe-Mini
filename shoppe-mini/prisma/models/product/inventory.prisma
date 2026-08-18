@@ -1,0 +1,19 @@
+model Inventory {
+  id Int @id @default(autoincrement())
+
+  productId Int @map("product_id")
+  product   Product @relation(fields: [productId], references: [id], onDelete: Cascade)
+
+  /// Null only when the product has no variants (enforced in application).
+  variantId Int? @unique @map("variant_id")
+  variant   ProductVariant? @relation(fields: [variantId], references: [id], onDelete: Cascade)
+
+  quantity  Int
+  warehouse String?
+
+  updatedAt DateTime @updatedAt @map("updated_at")
+  createdAt DateTime @default(now()) @map("created_at")
+
+  @@index([productId])
+  @@map("inventories")
+}

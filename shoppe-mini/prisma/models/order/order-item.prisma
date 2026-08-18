@@ -1,0 +1,28 @@
+model OrderItem {
+  id Int @id @default(autoincrement())
+
+  orderId Int   @map("order_id")
+  order   Order @relation(fields: [orderId], references: [id], onDelete: Cascade)
+
+  productId Int     @map("product_id")
+  product   Product @relation(fields: [productId], references: [id])
+
+  /// Null when the product had no variants at checkout.
+  variantId Int?            @map("variant_id")
+  variant   ProductVariant? @relation(fields: [variantId], references: [id], onDelete: SetNull)
+
+  /// Catalog snapshot — prices/names can change after the order is placed.
+  productName String  @map("product_name")
+  variantName String? @map("variant_name")
+  sku         String?
+  thumbnail   String?
+  unitPrice   Decimal @map("unit_price") @db.Decimal(12, 2)
+  quantity    Int
+
+  createdAt DateTime @default(now()) @map("created_at")
+
+  @@index([orderId])
+  @@index([productId])
+  @@index([variantId])
+  @@map("order_items")
+}

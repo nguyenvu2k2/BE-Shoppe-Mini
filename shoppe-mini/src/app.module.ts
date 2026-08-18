@@ -4,11 +4,17 @@ import { AppService } from './app.service';
 import { LoggerModule } from 'nestjs-pino';
 import { ConfigModule, ConfigService } from '@nestjs/config';
 import { PrismaModule } from './prisma/prisma.module';
+import { JwtAuthModule } from './common/auth/jwt-auth.module';
 import { AuthModule } from './modules/auth/auth.module';
 import { MailModule } from './modules/mail/mail.module';
 import { UserModule } from './modules/user/user.module';
 import { AddressModule } from './modules/address/address.module';
 import { FileModule } from './modules/files/file.module';
+import { CategoryModule } from './modules/category/category.module';
+import { ProductModule } from './modules/product/product.module';
+import { CartModule } from './modules/cart/cart.module';
+import { OrderModule } from './modules/order/order.module';
+import { PaymentModule } from './modules/payment/payment.module';
 
 @Module({
   imports: [
@@ -38,11 +44,17 @@ import { FileModule } from './modules/files/file.module';
       }),
     }),
     PrismaModule,
+    JwtAuthModule,
     MailModule,
     UserModule,
     AddressModule,
     AuthModule,
     FileModule,
+    CategoryModule,
+    ProductModule,
+    CartModule,
+    OrderModule,
+    PaymentModule,
   ],
   controllers: [AppController],
   providers: [AppService],
