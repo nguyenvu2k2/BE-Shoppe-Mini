@@ -17,6 +17,12 @@ import { slugify } from '../../common/utils/slugify';
 import { PrismaService } from '../../prisma/prisma.service';
 import { FileService } from '../files/file.service';
 import { S3_FOLDERS } from '../files/s3.constants';
+import { RedisService } from '../redis/redis.service';
+import {
+  REDIS_TTL,
+  RedisKeys,
+  productListQueryKey,
+} from '../redis/redis.keys';
 
 const productDetailInclude = {
   category: { select: { id: true, name: true, slug: true } },
@@ -39,10 +45,16 @@ export class ProductService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly fileService: FileService,
+    private readonly redis: RedisService,
   ) {}
 
   async findPublic(query: ListProductsQueryDto) {
-    return this.findMany({ ...query, status: ProductStatus.ACTIVE });
+    const key = RedisKeys.productList(
+      productListQueryKey({ ...query, status: ProductStatus.ACTIVE }),
+    );
+    return this.redis.getOrSetJson(key, REDIS_TTL.catalog, () =>
+      this.findMany({ ...query, status: ProductStatus.ACTIVE }),
+    );
   }
 
   async findManage(query: ListProductsQueryDto) {
@@ -50,13 +62,25 @@ export class ProductService {
   }
 
   async findOne(idOrSlug: string, opts?: { publicOnly?: boolean }) {
-    const product = await this.findActiveByIdOrSlug(idOrSlug);
+    const load = async () => {
+      const product = await this.findActiveByIdOrSlug(idOrSlug);
 
-    if (opts?.publicOnly && product.status !== ProductStatus.ACTIVE) {
-      throw new NotFoundException('Product not found');
+      if (opts?.publicOnly && product.status !== ProductStatus.ACTIVE) {
+        throw new NotFoundException('Product not found');
+      }
+
+      return this.toDetailResponse(product);
+    };
+
+    if (opts?.publicOnly) {
+      return this.redis.getOrSetJson(
+        RedisKeys.productOne(idOrSlug),
+        REDIS_TTL.catalog,
+        load,
+      );
     }
 
-    return this.toDetailResponse(product);
+    return load();
   }
 
   async create(dto: CreateProductDto) {
@@ -69,6 +93,9 @@ export class ProductService {
     }
 
     const hasVariants = (dto.variants?.length ?? 0) > 0;
+    if (hasVariants) {
+      await this.assertUniqueSkus(dto.variants!.map((v) => v.sku.trim()));
+    }
 
     const product = await this.prisma.$transaction(async (tx) => {
       const created = await tx.product.create({
@@ -123,6 +150,7 @@ export class ProductService {
       });
     });
 
+    await this.redis.invalidateCatalog();
     return this.toDetailResponse(product);
   }
 
@@ -177,6 +205,7 @@ export class ProductService {
       },
     });
 
+    await this.redis.invalidateCatalog();
     return this.findOne(String(id));
   }
 
@@ -188,6 +217,7 @@ export class ProductService {
       data: { deletedAt: new Date(), status: ProductStatus.INACTIVE },
     });
 
+    await this.redis.invalidateCatalog();
     return { message: 'Product deleted successfully' };
   }
 
@@ -215,6 +245,7 @@ export class ProductService {
       }
     }
 
+    await this.redis.invalidateCatalog();
     return this.findOne(String(id));
   }
 
@@ -236,6 +267,7 @@ export class ProductService {
       },
     });
 
+    await this.redis.invalidateCatalog();
     return this.findOne(String(id));
   }
 
@@ -264,6 +296,7 @@ export class ProductService {
       }
     }
 
+    await this.redis.invalidateCatalog();
     return this.findOne(String(productId));
   }
 
@@ -272,8 +305,12 @@ export class ProductService {
     await this.assertSkuAvailable(dto.sku.trim());
 
     await this.prisma.$transaction(async (tx) => {
-      // Switching from no-variant → has-variant: drop product-level inventory.
+      // Switching from no-variant → has-variant: drop product-level inventory
+      // and stale cart lines that had no variantId.
       await tx.inventory.deleteMany({
+        where: { productId, variantId: null },
+      });
+      await tx.cartItem.deleteMany({
         where: { productId, variantId: null },
       });
 
@@ -296,6 +333,7 @@ export class ProductService {
       });
     });
 
+    await this.redis.invalidateCatalog();
     return this.findOne(String(productId));
   }
 
@@ -320,25 +358,41 @@ export class ProductService {
       },
     });
 
+    await this.redis.invalidateCatalog();
     return this.findOne(String(productId));
   }
 
-  async removeVariant(productId: number, variantId: number) {
+  async removeVariant(
+    productId: number,
+    variantId: number,
+    transferToVariantId?: number,
+  ) {
     await this.findOwnedVariant(productId, variantId);
 
+    const orderItemCount = await this.prisma.orderItem.count({
+      where: { variantId },
+    });
+    if (orderItemCount > 0) {
+      throw new BadRequestException(
+        'Cannot delete a variant that exists on orders. Deactivate the product instead.',
+      );
+    }
+
     await this.prisma.$transaction(async (tx) => {
-      const remaining = await tx.productVariant.count({
+      const remaining = await tx.productVariant.findMany({
         where: { productId, id: { not: variantId } },
+        orderBy: { id: 'asc' },
+        select: { id: true },
       });
 
       const inventory = await tx.inventory.findUnique({
         where: { variantId },
       });
 
-      await tx.productVariant.delete({ where: { id: variantId } });
+      await tx.cartItem.deleteMany({ where: { variantId } });
 
-      // Last variant removed → restore product-level inventory (ERD rule).
-      if (remaining === 0) {
+      if (remaining.length === 0) {
+        await tx.productVariant.delete({ where: { id: variantId } });
         await tx.inventory.create({
           data: {
             productId,
@@ -347,9 +401,28 @@ export class ProductService {
             warehouse: inventory?.warehouse ?? null,
           },
         });
+        return;
       }
+
+      const qty = inventory?.quantity ?? 0;
+      if (qty > 0) {
+        const targetId = transferToVariantId ?? remaining[0].id;
+        if (!remaining.some((v) => v.id === targetId)) {
+          throw new BadRequestException(
+            'transferToVariantId must be another variant of this product',
+          );
+        }
+
+        await tx.inventory.update({
+          where: { variantId: targetId },
+          data: { quantity: { increment: qty } },
+        });
+      }
+
+      await tx.productVariant.delete({ where: { id: variantId } });
     });
 
+    await this.redis.invalidateCatalog();
     return this.findOne(String(productId));
   }
 
@@ -411,6 +484,7 @@ export class ProductService {
       }
     }
 
+    await this.redis.invalidateCatalog();
     return this.findOne(String(productId));
   }
 
@@ -483,6 +557,21 @@ export class ProductService {
     }
 
     return product;
+  }
+
+  private async assertUniqueSkus(
+    skus: string[],
+    excludeVariantId?: number,
+  ) {
+    const seen = new Set<string>();
+    for (const sku of skus) {
+      const normalized = sku.trim();
+      if (seen.has(normalized.toLowerCase())) {
+        throw new BadRequestException(`Duplicate SKU "${normalized}" in request`);
+      }
+      seen.add(normalized.toLowerCase());
+      await this.assertSkuAvailable(normalized, excludeVariantId);
+    }
   }
 
   private async assertSkuAvailable(sku: string, excludeVariantId?: number) {

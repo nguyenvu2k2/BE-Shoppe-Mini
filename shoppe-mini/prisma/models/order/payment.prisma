@@ -21,6 +21,9 @@ model Payment {
   /// Raw IPN/return payload for reconciliation.
   rawPayload Json? @map("raw_payload")
 
+  /// Gateway captured money that our order cannot keep (late IPN, duplicate txn).
+  needsRefund Boolean @default(false) @map("needs_refund")
+
   paidAt DateTime? @map("paid_at")
 
   createdAt DateTime @default(now()) @map("created_at")
@@ -28,5 +31,6 @@ model Payment {
 
   @@index([orderId])
   @@index([status])
+  @@index([needsRefund])
   @@map("payments")
 }

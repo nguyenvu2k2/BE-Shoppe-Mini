@@ -1,0 +1,64 @@
+# CI — kiểm tra code mỗi PR / mỗi push lên main.
+# Không deploy, không gọi S3 / VNPay / Resend / Google, không đụng database.
+#
+# GitHub chỉ đọc file trong .github/ ở root repo.
+# Code Nest nằm trong shoppe-mini/ → mọi lệnh npm chạy với working-directory bên dưới.
+
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+# Push mới trên cùng branch → hủy run cũ (tránh hàng đợi PR spam).
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    working-directory: shoppe-mini
+
+jobs:
+  check:
+    name: lint · generate · build · test
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: shoppe-mini/package-lock.json
+
+      # npm ci = cài đúng lockfile. Không dùng npm install trên CI.
+      - name: Install dependencies
+        run: npm ci
+
+      # generated/prisma bị gitignore. Local bạn đã generate; CI clone sạch nên phải generate lại.
+      # prisma.config.ts bắt buộc có DATABASE_URL; generate không kết nối DB.
+      - name: Generate Prisma Client
+        run: npx prisma generate
+        env:
+          DATABASE_URL: postgresql://ci:ci@127.0.0.1:5432/ci
+
+      # lint:ci không --fix. Script "lint" local có --fix, không dùng trên CI.
+      - name: Lint
+        run: npm run lint:ci
+
+      - name: Build
+        run: npm run build
+
+      # Unit test hiện tại không cần Postgres / Redis.
+      # test:e2e boot cả AppModule (DB + Redis + env) — chưa chạy trên CI.
+      - name: Unit tests
+        run: npm test

@@ -75,7 +75,7 @@ export class OrderController {
     return this.orderService.updatePaymentStatus(id, dto);
   }
 
-  /** Admin: hủy đơn hàng (khi PENDING hoặc CONFIRMED) */
+  /** Admin: hủy đơn hàng (PENDING / CONFIRMED / SHIPPING; PAID thì gắn needsRefund) */
   @Patch('manage/:id/cancel')
   @AuthPermissions(PERMISSIONS.ORDER_UPDATE)
   cancelByAdmin(

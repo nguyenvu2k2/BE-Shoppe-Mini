@@ -4,9 +4,11 @@ import { Logger } from 'nestjs-pino';
 import { AppModule } from './app.module';
 import { ValidationPipe } from '@nestjs/common';
 import cookieParser from 'cookie-parser';
+import { SocketIoAdapter } from './modules/realtime/socket-io.adapter';
 
 async function bootstrap() {
   const app = await NestFactory.create(AppModule);
+  app.useWebSocketAdapter(new SocketIoAdapter(app));
   app.useGlobalPipes(new ValidationPipe({
     whitelist: true,
   }));

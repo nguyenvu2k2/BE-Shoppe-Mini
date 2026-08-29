@@ -2,8 +2,9 @@ import {
   PaymentMethod,
   PaymentTxnStatus,
 } from '../../../../generated/prisma/client';
-import { Type } from 'class-transformer';
+import { Transform, Type } from 'class-transformer';
 import {
+  IsBoolean,
   IsEnum,
   IsInt,
   IsOptional,
@@ -38,4 +39,13 @@ export class ListPaymentsQueryDto {
   @IsOptional()
   @IsEnum(PaymentMethod)
   method?: PaymentMethod;
+
+  @IsOptional()
+  @Transform(({ value }) => {
+    if (value === true || value === 'true' || value === '1') return true;
+    if (value === false || value === 'false' || value === '0') return false;
+    return value;
+  })
+  @IsBoolean()
+  needsRefund?: boolean;
 }

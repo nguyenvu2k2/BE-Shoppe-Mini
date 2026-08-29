@@ -16,6 +16,8 @@ import { AuthGuard } from '../../common/auth/auth.guard';
 import { AuthPermissions } from '../../common/auth/auth-permissions.decorator';
 import { CurrentUser } from '../../common/auth/current-user.decorator';
 import { PERMISSIONS } from '../../common/auth/permissions';
+import { RateLimit } from '../../common/auth/rate-limit.decorator';
+import { RateLimitGuard } from '../../common/auth/rate-limit.guard';
 import type { RequestWithCookies } from '../../common/auth/request-with-cookies.type';
 import { SignInDto } from '../../common/dto/auth/sign-in.dto';
 import { ForgotPasswordDto } from '../../common/dto/auth/forgot-password.dto';
@@ -35,21 +37,21 @@ export class AuthController {
   ) {}
 
   @Post('register')
+  @UseGuards(RateLimitGuard)
+  @RateLimit({ scope: 'register', max: 10, windowSec: 3600 })
   register(@Body() registerDto: RegisterDto) {
     return this.authService.register(registerDto);
   }
 
   @Post('signin')
+  @UseGuards(RateLimitGuard)
+  @RateLimit({ scope: 'signin', max: 10, windowSec: 900 })
   async signIn(
     @Body() signDto: SignInDto,
     @Req() req: RequestWithCookies,
     @Res({ passthrough: true }) res: Response,
   ) {
     const user = await this.authService.validateUser(signDto.email, signDto.password);
-
-    if (user instanceof UnauthorizedException) {
-      throw user;
-    }
 
     const tokens = await this.authService.signIn(
       {
@@ -81,6 +83,8 @@ export class AuthController {
   }
 
   @Post('google')
+  @UseGuards(RateLimitGuard)
+  @RateLimit({ scope: 'google', max: 20, windowSec: 900 })
   async googleLogin(
     @Body('code') code: string,
     @Req() req: RequestWithCookies,
@@ -154,6 +158,8 @@ export class AuthController {
   }
 
   @Post('forgot-password')
+  @UseGuards(RateLimitGuard)
+  @RateLimit({ scope: 'forgot', max: 5, windowSec: 900 })
   forgotPassword(@Body() dto: ForgotPasswordDto) {
     return this.authService.forgotPassword(dto.email);
   }

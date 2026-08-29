@@ -1,0 +1,63 @@
+# Chạy cả API + Postgres:
+#   docker compose up --build
+# Tắt và xóa container (giữ data):
+#   docker compose down
+# Xóa luôn volume DB:
+#   docker compose down -v
+#
+# Host Postgres Windows thường chiếm 5432. Map 5433 ra máy
+# để Prisma CLI (localhost) không đụng nhầm instance đó.
+# Trong mạng Compose, API vẫn nối db:5432.
+
+services:
+  db:
+    image: postgres:16
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-password}
+      POSTGRES_DB: ${POSTGRES_DB:-shoppe-mini}
+    ports:
+      - "5433:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-postgres} -d ${POSTGRES_DB:-shoppe-mini}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  api:
+    build: .
+    restart: unless-stopped
+    ports:
+      - "3001:3001"
+    env_file:
+      - .env
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-password}@db:5432/${POSTGRES_DB:-shoppe-mini}?schema=public
+      REDIS_URL: redis://redis:6379
+      NODE_ENV: production
+      PORT: 3001
+      # Sandbox trên máy: return URL ghi PAID (IPN không vào localhost).
+      # Production thật: false + VNP_IPN_URL public.
+      VNP_CONFIRM_ON_RETURN: ${VNP_CONFIRM_ON_RETURN:-true}
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+volumes:
+  postgres_data:

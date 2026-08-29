@@ -1,4 +1,5 @@
 import { IsNotEmpty, IsOptional, IsString } from 'class-validator';
+import { IsVnPhone } from '../../utils/phone';
 
 export class UpdateProfileDto {
   @IsOptional()
@@ -8,6 +9,7 @@ export class UpdateProfileDto {
 
   @IsOptional()
   @IsString()
+  @IsVnPhone()
   phone?: string;
 
   @IsOptional()

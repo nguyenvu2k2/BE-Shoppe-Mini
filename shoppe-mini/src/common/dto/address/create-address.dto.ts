@@ -1,4 +1,5 @@
 import { IsBoolean, IsNotEmpty, IsOptional, IsString } from 'class-validator';
+import { IsVnPhone } from '../../utils/phone';
 
 export class CreateAddressDto {
   @IsString()
@@ -7,6 +8,7 @@ export class CreateAddressDto {
 
   @IsString()
   @IsNotEmpty()
+  @IsVnPhone()
   phone: string;
 
   @IsString()

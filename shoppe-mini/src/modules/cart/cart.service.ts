@@ -9,6 +9,7 @@ import {
   UpdateCartItemDto,
 } from '../../common/dto/cart/cart-item.dto';
 import { PrismaService } from '../../prisma/prisma.service';
+import { roundMoney, unitPriceForLine } from '../../common/utils/unit-price';
 
 const cartInclude = {
   items: {
@@ -88,14 +89,44 @@ export class CartService {
           data: { quantity: nextQty },
         });
       } else {
-        await tx.cartItem.create({
-          data: {
-            cartId: cart.id,
-            productId: product.id,
-            variantId,
-            quantity: dto.quantity,
-          },
-        });
+        try {
+          await tx.cartItem.create({
+            data: {
+              cartId: cart.id,
+              productId: product.id,
+              variantId,
+              quantity: dto.quantity,
+            },
+          });
+        } catch (err) {
+          if (
+            err instanceof Prisma.PrismaClientKnownRequestError &&
+            err.code === 'P2002'
+          ) {
+            const raced = await tx.cartItem.findFirst({
+              where: {
+                cartId: cart.id,
+                productId: product.id,
+                variantId,
+              },
+            });
+            if (!raced) {
+              throw err;
+            }
+            const nextQty = raced.quantity + dto.quantity;
+            if (nextQty > availableStock) {
+              throw new BadRequestException(
+                `Only ${availableStock} item(s) available in stock (already ${raced.quantity} in cart)`,
+              );
+            }
+            await tx.cartItem.update({
+              where: { id: raced.id },
+              data: { quantity: nextQty },
+            });
+            return;
+          }
+          throw err;
+        }
       }
     });
 
@@ -209,7 +240,7 @@ export class CartService {
       return {
         product,
         variantId: variant.id,
-        unitPrice: Number(variant.price),
+        unitPrice: unitPriceForLine(product, variant),
         availableStock,
       };
     }
@@ -227,10 +258,7 @@ export class CartService {
       throw new BadRequestException('This product is out of stock');
     }
 
-    const unitPrice =
-      product.discountPrice != null
-        ? Number(product.discountPrice)
-        : Number(product.price);
+    const unitPrice = unitPriceForLine(product);
 
     return {
       product,
@@ -266,21 +294,18 @@ export class CartService {
             name: variant.name,
             sku: variant.sku,
           };
-          unitPrice = Number(variant.price);
+          unitPrice = unitPriceForLine(product, variant);
           availableStock = variant.inventory?.quantity ?? 0;
         }
       } else {
-        unitPrice =
-          product.discountPrice != null
-            ? Number(product.discountPrice)
-            : Number(product.price);
+        unitPrice = unitPriceForLine(product);
         availableStock =
           product.inventory.find((row) => row.variantId == null)?.quantity ?? 0;
       }
 
       const isAvailable =
         isActive && availableStock > 0 && item.quantity <= availableStock;
-      const lineTotal = Number((unitPrice * item.quantity).toFixed(2));
+      const lineTotal = roundMoney(unitPrice * item.quantity);
 
       return {
         id: item.id,
@@ -304,8 +329,8 @@ export class CartService {
     });
 
     const selectable = items.filter((i) => i.isAvailable);
-    const subtotal = Number(
-      selectable.reduce((sum, i) => sum + i.lineTotal, 0).toFixed(2),
+    const subtotal = roundMoney(
+      selectable.reduce((sum, i) => sum + i.lineTotal, 0),
     );
 
     return {

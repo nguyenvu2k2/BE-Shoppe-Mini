@@ -1,5 +1,6 @@
 import {
   BadRequestException,
+  ConflictException,
   Injectable,
   Logger,
   UnauthorizedException,
@@ -60,7 +61,7 @@ export class AuthService {
     });
 
     if (existingUser) {
-      throw new Error('User with this email already exists');
+      throw new ConflictException('User with this email already exists');
     }
 
     const hashPassword = await bcrypt.hash(password as string, 10);
@@ -82,12 +83,12 @@ export class AuthService {
   }
 
   async validateUser(email: string | undefined, password: string | undefined) {
-    const user = await this.prisma.user.findUnique({
-      where: { email },
+    const user = await this.prisma.user.findFirst({
+      where: { email, deletedAt: null },
     });
 
     if (!user?.passwordHash) {
-      return new UnauthorizedException('Invalid email or password');
+      throw new UnauthorizedException('Invalid email or password');
     }
 
     const isPasswordValid = await bcrypt.compare(password, user.passwordHash);
@@ -138,6 +139,10 @@ export class AuthService {
       throw new UnauthorizedException('Google account has no email');
     }
 
+    if (payload.email_verified !== true) {
+      throw new UnauthorizedException('Google email is not verified');
+    }
+
     const googleId = payload.sub;
     const email = payload.email;
     const avatar = payload.picture;
@@ -149,6 +154,9 @@ export class AuthService {
     });
 
     if (byGoogleId) {
+      if (byGoogleId.deletedAt) {
+        throw new UnauthorizedException('This account has been disabled');
+      }
       return byGoogleId;
     }
 
@@ -158,15 +166,12 @@ export class AuthService {
     });
 
     if (byEmail) {
-      return this.prisma.user.update({
-        where: { id: byEmail.id },
-        data: {
-          googleId,
-          avatar: byEmail.avatar ?? avatar,
-          fullName: byEmail.fullName ?? fullName,
-        },
-        include: { role: true },
-      });
+      if (byEmail.deletedAt) {
+        throw new UnauthorizedException('This account has been disabled');
+      }
+      throw new ConflictException(
+        'An account with this email already exists. Please sign in with your password.',
+      );
     }
 
     const role = await this.prisma.role.findFirst({
@@ -333,8 +338,8 @@ export class AuthService {
   }
 
   findUserById(id: number) {
-    return this.prisma.user.findUnique({
-      where: { id: id },
+    return this.prisma.user.findFirst({
+      where: { id, deletedAt: null },
     });
   }
 
@@ -369,7 +374,9 @@ export class AuthService {
   }
 
   async forgotPassword(email: string) {
-    const user = await this.prisma.user.findUnique({ where: { email } });
+    const user = await this.prisma.user.findFirst({
+      where: { email, deletedAt: null },
+    });
 
     if (!user) {
       this.logger.debug(`Forgot password: no user for ${email}`);

@@ -1,4 +1,5 @@
 import { IsBoolean, IsNotEmpty, IsOptional, IsString } from 'class-validator';
+import { IsVnPhone } from '../../utils/phone';
 
 export class UpdateAddressDto {
   @IsOptional()
@@ -9,6 +10,7 @@ export class UpdateAddressDto {
   @IsOptional()
   @IsString()
   @IsNotEmpty()
+  @IsVnPhone()
   phone?: string;
 
   @IsOptional()

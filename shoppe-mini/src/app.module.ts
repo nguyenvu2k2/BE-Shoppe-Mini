@@ -5,6 +5,7 @@ import { LoggerModule } from 'nestjs-pino';
 import { ConfigModule, ConfigService } from '@nestjs/config';
 import { PrismaModule } from './prisma/prisma.module';
 import { JwtAuthModule } from './common/auth/jwt-auth.module';
+import { RedisModule } from './modules/redis/redis.module';
 import { AuthModule } from './modules/auth/auth.module';
 import { MailModule } from './modules/mail/mail.module';
 import { UserModule } from './modules/user/user.module';
@@ -15,6 +16,7 @@ import { ProductModule } from './modules/product/product.module';
 import { CartModule } from './modules/cart/cart.module';
 import { OrderModule } from './modules/order/order.module';
 import { PaymentModule } from './modules/payment/payment.module';
+import { RealtimeModule } from './modules/realtime/realtime.module';
 
 @Module({
   imports: [
@@ -44,6 +46,7 @@ import { PaymentModule } from './modules/payment/payment.module';
       }),
     }),
     PrismaModule,
+    RedisModule,
     JwtAuthModule,
     MailModule,
     UserModule,
@@ -55,6 +58,7 @@ import { PaymentModule } from './modules/payment/payment.module';
     CartModule,
     OrderModule,
     PaymentModule,
+    RealtimeModule,
   ],
   controllers: [AppController],
   providers: [AppService],

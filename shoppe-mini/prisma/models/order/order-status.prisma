@@ -4,6 +4,8 @@ enum OrderStatus {
   SHIPPING
   COMPLETED
   CANCELLED
+  /// Completed order that was returned; stock restored, soldCount decremented.
+  RETURNED
 }
 
 enum PaymentStatus {

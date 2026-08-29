@@ -160,8 +160,18 @@ export class ProductController {
   removeVariant(
     @Param('id', ParseIntPipe) id: number,
     @Param('variantId', ParseIntPipe) variantId: number,
+    @Query('transferToVariantId') transferToVariantId?: string,
   ) {
-    return this.productService.removeVariant(id, variantId);
+    let transferId: number | undefined;
+    if (transferToVariantId != null && transferToVariantId !== '') {
+      transferId = Number(transferToVariantId);
+      if (!Number.isInteger(transferId) || transferId < 1) {
+        throw new BadRequestException(
+          'transferToVariantId must be a positive integer',
+        );
+      }
+    }
+    return this.productService.removeVariant(id, variantId, transferId);
   }
 
   @Patch(':id/inventory')

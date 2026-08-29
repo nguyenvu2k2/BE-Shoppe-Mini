@@ -7,6 +7,8 @@ import {
 } from '@nestjs/common';
 import { Reflector } from '@nestjs/core';
 import { PrismaService } from '../../prisma/prisma.service';
+import { RedisKeys, REDIS_TTL } from '../../modules/redis/redis.keys';
+import { RedisService } from '../../modules/redis/redis.service';
 import type { PermissionName } from './permissions';
 import { PERMISSIONS_KEY } from './require-permissions.decorator';
 import type { RequestWithCookies } from './request-with-cookies.type';
@@ -20,6 +22,7 @@ export class PermissionsGuard implements CanActivate {
   constructor(
     private readonly reflector: Reflector,
     private readonly prisma: PrismaService,
+    private readonly redis: RedisService,
   ) {}
 
   async canActivate(context: ExecutionContext): Promise<boolean> {
@@ -39,28 +42,34 @@ export class PermissionsGuard implements CanActivate {
       throw new UnauthorizedException('No access token');
     }
 
-    const user = await this.prisma.user.findFirst({
-      where: { id: userId, deletedAt: null },
-      select: {
-        role: {
-          select: {
-            rolePermissions: {
-              select: {
-                permission: { select: { name: true } },
+    const cacheKey = RedisKeys.permissions(userId);
+    let names = await this.redis.getJson<string[]>(cacheKey);
+
+    if (!names) {
+      const user = await this.prisma.user.findFirst({
+        where: { id: userId, deletedAt: null },
+        select: {
+          role: {
+            select: {
+              rolePermissions: {
+                select: {
+                  permission: { select: { name: true } },
+                },
               },
             },
           },
         },
-      },
-    });
+      });
 
-    if (!user) {
-      throw new UnauthorizedException('User not found');
+      if (!user) {
+        throw new UnauthorizedException('User not found');
+      }
+
+      names = user.role.rolePermissions.map((rp) => rp.permission.name);
+      await this.redis.setJson(cacheKey, names, REDIS_TTL.permissions);
     }
 
-    const owned = new Set(
-      user.role.rolePermissions.map((rp) => rp.permission.name),
-    );
+    const owned = new Set(names);
 
     const missing = required.filter((name) => !owned.has(name));
 

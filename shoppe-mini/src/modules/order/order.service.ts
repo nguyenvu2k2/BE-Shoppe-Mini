@@ -2,6 +2,7 @@ import {
   BadRequestException,
   HttpException,
   Injectable,
+  InternalServerErrorException,
   Logger,
   NotFoundException,
 } from '@nestjs/common';
@@ -20,8 +21,14 @@ import { ListOrdersQueryDto } from '../../common/dto/order/list-orders-query.dto
 import { UpdateOrderStatusDto } from '../../common/dto/order/update-order-status.dto';
 import { UpdatePaymentStatusDto } from '../../common/dto/order/update-payment-status.dto';
 import { PrismaService } from '../../prisma/prisma.service';
+import { computeShippingFee } from '../../common/utils/shipping';
+import { roundMoney, unitPriceForLine } from '../../common/utils/unit-price';
 import { PaymentService } from '../payment/payment.service';
-import { restoreInventory } from './restore-inventory';
+import {
+  InventoryRestoreError,
+  adjustSoldCount,
+  restoreInventory,
+} from './restore-inventory';
 
 const orderInclude = {
   items: { orderBy: { id: 'asc' as const } },
@@ -34,9 +41,10 @@ type OrderWithItems = Prisma.OrderGetPayload<{ include: typeof orderInclude }>;
 const STATUS_FLOW: Record<OrderStatus, OrderStatus[]> = {
   [OrderStatus.PENDING]: [OrderStatus.CONFIRMED, OrderStatus.CANCELLED],
   [OrderStatus.CONFIRMED]: [OrderStatus.SHIPPING, OrderStatus.CANCELLED],
-  [OrderStatus.SHIPPING]: [OrderStatus.COMPLETED],
+  [OrderStatus.SHIPPING]: [OrderStatus.COMPLETED, OrderStatus.CANCELLED],
   [OrderStatus.COMPLETED]: [],
   [OrderStatus.CANCELLED]: [],
+  [OrderStatus.RETURNED]: [],
 };
 
 @Injectable()
@@ -58,7 +66,7 @@ export class OrderService {
    * (vnpay: null, vnpayError) để FE gọi POST /payments/vnpay/create.
    */
   async checkout(userId: number, dto: CreateOrderDto, ipAddr: string) {
-    await this.paymentService.expireStaleVnpayOrders();
+    await this.paymentService.expireStaleOrders();
 
     const address = await this.prisma.address.findFirst({
       where: { id: dto.addressId, userId },
@@ -89,7 +97,22 @@ export class OrderService {
         throw new BadRequestException('Cart is empty');
       }
 
-      const lines = cart.items.map((item) => {
+      let selected = cart.items;
+      if (dto.itemIds?.length) {
+        const wanted = new Set(dto.itemIds);
+        selected = cart.items.filter((item) => wanted.has(item.id));
+        if (selected.length !== wanted.size) {
+          throw new BadRequestException(
+            'One or more cart items were not found in your cart',
+          );
+        }
+      }
+
+      if (selected.length === 0) {
+        throw new BadRequestException('Cart is empty');
+      }
+
+      const lines = selected.map((item) => {
         const product = item.product;
 
         if (product.deletedAt != null || product.status !== ProductStatus.ACTIVE) {
@@ -120,7 +143,7 @@ export class OrderService {
             variantName: item.variant.name,
             sku: item.variant.sku,
             thumbnail: product.thumbnail,
-            unitPrice: Number(item.variant.price),
+            unitPrice: unitPriceForLine(product, item.variant),
             quantity: item.quantity,
           };
         }
@@ -135,11 +158,6 @@ export class OrderService {
           );
         }
 
-        const unitPrice =
-          product.discountPrice != null
-            ? Number(product.discountPrice)
-            : Number(product.price);
-
         return {
           inventoryId: inventoryRow!.id,
           productId: product.id,
@@ -148,16 +166,20 @@ export class OrderService {
           variantName: null,
           sku: null,
           thumbnail: product.thumbnail,
-          unitPrice,
+          unitPrice: unitPriceForLine(product),
           quantity: item.quantity,
         };
       });
 
-      const subtotal = Number(
-        lines.reduce((sum, l) => sum + l.unitPrice * l.quantity, 0).toFixed(2),
+      const subtotal = roundMoney(
+        lines.reduce((sum, l) => sum + l.unitPrice * l.quantity, 0),
       );
-      const shippingFee = 0;
-      const total = Number((subtotal + shippingFee).toFixed(2));
+      const shippingFee = computeShippingFee();
+      const total = roundMoney(subtotal + shippingFee);
+
+      if (dto.paymentMethod === PaymentMethod.VNPAY && total <= 0) {
+        throw new BadRequestException('VNPay requires a total greater than 0');
+      }
 
       for (const line of lines) {
         const updated = await tx.inventory.updateMany({
@@ -206,7 +228,12 @@ export class OrderService {
         include: orderInclude,
       });
 
-      await tx.cartItem.deleteMany({ where: { cartId: cart.id } });
+      await tx.cartItem.deleteMany({
+        where: {
+          cartId: cart.id,
+          id: { in: selected.map((item) => item.id) },
+        },
+      });
 
       return created;
     });
@@ -285,7 +312,9 @@ export class OrderService {
       throw new NotFoundException('Order not found');
     }
 
-    return this.cancelOrder(order, dto.cancelReason, [OrderStatus.PENDING]);
+    return this.cancelOrder(order, dto.cancelReason, [OrderStatus.PENDING], {
+      allowPaid: false,
+    });
   }
 
   // ==================== ADMIN ====================
@@ -372,13 +401,7 @@ export class OrderService {
           where: { orderId },
           select: { productId: true, quantity: true },
         });
-
-        for (const item of items) {
-          await tx.product.update({
-            where: { id: item.productId },
-            data: { soldCount: { increment: item.quantity } },
-          });
-        }
+        await adjustSoldCount(tx, items, 'increment');
       }
     });
 
@@ -393,7 +416,7 @@ export class OrderService {
     return this.findOneForAdmin(orderId);
   }
 
-  /** Admin hủy đơn: PENDING hoặc CONFIRMED, và chưa PAID. */
+  /** Admin hủy đơn: PENDING / CONFIRMED / SHIPPING. Đơn đã PAID thì gắn needsRefund. */
   async cancelByAdmin(orderId: number, dto: CancelOrderDto) {
     const order = await this.prisma.order.findUnique({
       where: { id: orderId },
@@ -407,21 +430,24 @@ export class OrderService {
     return this.cancelOrder(order, dto.cancelReason, [
       OrderStatus.PENDING,
       OrderStatus.CONFIRMED,
-    ]);
+      OrderStatus.SHIPPING,
+    ], { allowPaid: true });
   }
 
   // ==================== PRIVATE ====================
 
   /**
-   * Hủy đơn + hoàn kho. Khóa dòng order trước, chỉ hoàn kho khi UPDATE thành công
-   * (tránh race với IPN / expire cộng kho hai lần hoặc hủy đơn đã PAID).
+   * Hủy đơn + hoàn kho. Khóa dòng order trước.
+   * Unpaid: paymentStatus → FAILED.
+   * Paid (admin only): giữ PAID, gắn needsRefund trên các payment PAID (hoàn tại cổng).
    */
   private async cancelOrder(
     order: Prisma.OrderGetPayload<{ include: { items: true } }>,
     cancelReason: string | undefined,
     allowedStatuses: OrderStatus[],
+    opts: { allowPaid: boolean },
   ) {
-    if (order.paymentStatus === PaymentStatus.PAID) {
+    if (order.paymentStatus === PaymentStatus.PAID && !opts.allowPaid) {
       throw new BadRequestException(
         'Paid orders cannot be cancelled. Request a refund instead.',
       );
@@ -436,48 +462,81 @@ export class OrderService {
       );
     }
 
-    await this.prisma.$transaction(async (tx) => {
-      await tx.$queryRaw(
-        Prisma.sql`SELECT id FROM orders WHERE id = ${order.id} FOR UPDATE`,
-      );
+    try {
+      await this.prisma.$transaction(async (tx) => {
+        await tx.$queryRaw(
+          Prisma.sql`SELECT id FROM orders WHERE id = ${order.id} FOR UPDATE`,
+        );
 
-      const cancelled = await tx.order.updateMany({
-        where: {
-          id: order.id,
-          status: { in: allowedStatuses },
-          paymentStatus: { not: PaymentStatus.PAID },
-        },
-        data: {
-          status: OrderStatus.CANCELLED,
-          cancelledAt: new Date(),
-          cancelReason: cancelReason?.trim() || null,
-        },
-      });
-
-      if (cancelled.count === 0) {
         const current = await tx.order.findUnique({ where: { id: order.id } });
-        if (current?.paymentStatus === PaymentStatus.PAID) {
+        if (!current) {
+          throw new NotFoundException('Order not found');
+        }
+
+        if (!allowedStatuses.includes(current.status)) {
+          throw new BadRequestException(
+            `Cannot cancel an order in ${current.status} status`,
+          );
+        }
+
+        const isPaid = current.paymentStatus === PaymentStatus.PAID;
+        if (isPaid && !opts.allowPaid) {
           throw new BadRequestException(
             'Paid orders cannot be cancelled. Request a refund instead.',
           );
         }
-        throw new BadRequestException('Order could not be cancelled');
-      }
 
-      await restoreInventory(tx, order.items);
+        const cancelled = await tx.order.updateMany({
+          where: {
+            id: order.id,
+            status: { in: allowedStatuses },
+            ...(isPaid
+              ? { paymentStatus: PaymentStatus.PAID }
+              : { paymentStatus: { not: PaymentStatus.PAID } }),
+          },
+          data: {
+            status: OrderStatus.CANCELLED,
+            cancelledAt: new Date(),
+            cancelReason: cancelReason?.trim() || null,
+            ...(!isPaid && { paymentStatus: PaymentStatus.FAILED }),
+          },
+        });
 
-      await tx.payment.updateMany({
-        where: {
-          orderId: order.id,
-          method: PaymentMethod.VNPAY,
-          status: PaymentTxnStatus.PENDING,
-        },
-        data: {
-          status: PaymentTxnStatus.FAILED,
-          responseCode: 'ORDER_CANCELLED',
-        },
+        if (cancelled.count === 0) {
+          throw new BadRequestException('Order could not be cancelled');
+        }
+
+        await restoreInventory(tx, order.items);
+
+        if (isPaid) {
+          await tx.payment.updateMany({
+            where: {
+              orderId: order.id,
+              status: PaymentTxnStatus.PAID,
+            },
+            data: { needsRefund: true },
+          });
+        }
+
+        await tx.payment.updateMany({
+          where: {
+            orderId: order.id,
+            status: PaymentTxnStatus.PENDING,
+          },
+          data: {
+            status: PaymentTxnStatus.FAILED,
+            responseCode: 'ORDER_CANCELLED',
+          },
+        });
       });
-    });
+    } catch (err) {
+      if (err instanceof InventoryRestoreError) {
+        throw new InternalServerErrorException(
+          'Could not restore inventory for this order. Contact support.',
+        );
+      }
+      throw err;
+    }
 
     return this.findOneForAdmin(order.id);
   }
@@ -570,7 +629,7 @@ export class OrderService {
         thumbnail: item.thumbnail,
         unitPrice: Number(item.unitPrice),
         quantity: item.quantity,
-        lineTotal: Number((Number(item.unitPrice) * item.quantity).toFixed(2)),
+        lineTotal: roundMoney(Number(item.unitPrice) * item.quantity),
       })),
       paidAt: order.paidAt,
       shippedAt: order.shippedAt,

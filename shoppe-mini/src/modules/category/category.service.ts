@@ -11,6 +11,8 @@ import { PrismaService } from '../../prisma/prisma.service';
 import { FileService } from '../files/file.service';
 import { S3_FOLDERS } from '../files/s3.constants';
 import { slugify } from '../../common/utils/slugify';
+import { REDIS_TTL, RedisKeys } from '../redis/redis.keys';
+import { RedisService } from '../redis/redis.service';
 
 export type CategoryNode = {
   id: number;
@@ -30,29 +32,38 @@ export class CategoryService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly fileService: FileService,
+    private readonly redis: RedisService,
   ) {}
 
   async findAll() {
-    const categories = await this.prisma.category.findMany({
-      where: { deletedAt: null },
-      orderBy: [{ name: 'asc' }],
+    return this.redis.getOrSetJson(RedisKeys.categoryList, REDIS_TTL.catalog, async () => {
+      const categories = await this.prisma.category.findMany({
+        where: { deletedAt: null },
+        orderBy: [{ name: 'asc' }],
+      });
+      return categories.map((c) => this.toResponse(c));
     });
-
-    return categories.map((c) => this.toResponse(c));
   }
 
   async findTree(): Promise<CategoryNode[]> {
-    const categories = await this.prisma.category.findMany({
-      where: { deletedAt: null },
-      orderBy: [{ name: 'asc' }],
+    return this.redis.getOrSetJson(RedisKeys.categoryTree, REDIS_TTL.catalog, async () => {
+      const categories = await this.prisma.category.findMany({
+        where: { deletedAt: null },
+        orderBy: [{ name: 'asc' }],
+      });
+      return this.buildTree(categories);
     });
-
-    return this.buildTree(categories);
   }
 
   async findOne(idOrSlug: string) {
-    const category = await this.findActiveByIdOrSlug(idOrSlug);
-    return this.toResponse(category);
+    return this.redis.getOrSetJson(
+      RedisKeys.categoryOne(idOrSlug),
+      REDIS_TTL.catalog,
+      async () => {
+        const category = await this.findActiveByIdOrSlug(idOrSlug);
+        return this.toResponse(category);
+      },
+    );
   }
 
   async create(dto: CreateCategoryDto) {
@@ -74,6 +85,7 @@ export class CategoryService {
       },
     });
 
+    await this.redis.invalidateCatalog();
     return this.toResponse(category);
   }
 
@@ -108,6 +120,7 @@ export class CategoryService {
       },
     });
 
+    await this.redis.invalidateCatalog();
     return this.toResponse(category);
   }
 
@@ -139,6 +152,7 @@ export class CategoryService {
       data: { deletedAt: new Date() },
     });
 
+    await this.redis.invalidateCatalog();
     return { message: 'Category deleted successfully' };
   }
 
@@ -167,6 +181,7 @@ export class CategoryService {
       }
     }
 
+    await this.redis.invalidateCatalog();
     return this.toResponse(category);
   }
 

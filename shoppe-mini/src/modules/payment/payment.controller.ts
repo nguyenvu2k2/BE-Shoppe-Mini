@@ -81,7 +81,7 @@ export class PaymentController {
     return this.paymentService.findManage(query);
   }
 
-  /** Admin: xác nhận tay COD / chuyển khoản. Không dùng cho VNPay. */
+  /** Admin: xác nhận tay COD / CK. VNPay chỉ cho REFUNDED (sau khi hoàn tại cổng). */
   @Patch('manage/cod/:orderId')
   @AuthPermissions(PERMISSIONS.PAYMENT_UPDATE)
   @UsePipes(validateBody)
@@ -90,6 +90,13 @@ export class PaymentController {
     @Body() dto: UpdatePaymentStatusDto,
   ) {
     return this.paymentService.confirmManual(orderId, dto);
+  }
+
+  /** Admin: đánh dấu đã hoàn tiền tại cổng (duplicate / IPN trễ / đơn hủy đã PAID). */
+  @Patch('manage/:paymentId/settle-refund')
+  @AuthPermissions(PERMISSIONS.PAYMENT_UPDATE)
+  settleRefund(@Param('paymentId', ParseIntPipe) paymentId: number) {
+    return this.paymentService.settleRefund(paymentId);
   }
 
   /** Khách: lịch sử thanh toán một đơn của mình. */

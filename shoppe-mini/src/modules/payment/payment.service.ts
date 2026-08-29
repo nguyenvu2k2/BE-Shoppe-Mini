@@ -3,8 +3,6 @@ import {
   Injectable,
   Logger,
   NotFoundException,
-  OnModuleDestroy,
-  OnModuleInit,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import {
@@ -23,7 +21,11 @@ import {
   toVnpAmount,
   verifyVnpSecureHash,
 } from '../../common/utils/vnpay.util';
-import { restoreInventory } from '../order/restore-inventory';
+import {
+  adjustSoldCount,
+  restoreInventory,
+} from '../order/restore-inventory';
+import { RealtimeService } from '../realtime/realtime.service';
 
 type VnpIpnResponse = { RspCode: string; Message: string };
 
@@ -42,40 +44,17 @@ export type VnpReturnResult = {
 };
 
 const PAY_URL_TTL_MS = 15 * 60 * 1000;
-const EXPIRE_INTERVAL_MS = 60 * 1000;
+const DEFAULT_COD_EXPIRE_HOURS = 24;
 
 @Injectable()
-export class PaymentService implements OnModuleInit, OnModuleDestroy {
+export class PaymentService {
   private readonly logger = new Logger(PaymentService.name);
-  private expireTimer?: ReturnType<typeof setInterval>;
 
   constructor(
     private readonly prisma: PrismaService,
     private readonly configService: ConfigService,
-  ) {}
-
-  onModuleInit() {
-    this.expireTimer = setInterval(() => {
-      void this.expireStaleVnpayOrders().catch((err: unknown) => {
-        this.logger.error(
-          'Failed to expire stale VNPay orders',
-          err instanceof Error ? err.stack : String(err),
-        );
-      });
-    }, EXPIRE_INTERVAL_MS);
-    void this.expireStaleVnpayOrders().catch((err: unknown) => {
-      this.logger.error(
-        'Failed to expire stale VNPay orders',
-        err instanceof Error ? err.stack : String(err),
-      );
-    });
-  }
-
-  onModuleDestroy() {
-    if (this.expireTimer) {
-      clearInterval(this.expireTimer);
-    }
-  }
+    private readonly realtimeService: RealtimeService,
+  ) { }
 
   /**
    * Tạo URL VNPay. Mỗi lần gọi = một txnRef mới (VNPay từ chối gửi lại cùng vnp_TxnRef).
@@ -88,7 +67,7 @@ export class PaymentService implements OnModuleInit, OnModuleDestroy {
     opts?: { skipExpire?: boolean },
   ) {
     if (!opts?.skipExpire) {
-      await this.expireStaleVnpayOrders();
+      await this.expireStaleOrders();
     }
 
     const tmnCode = this.configService.getOrThrow<string>('VNP_TMN_CODE');
@@ -97,7 +76,6 @@ export class PaymentService implements OnModuleInit, OnModuleDestroy {
     const returnUrl = this.configService.getOrThrow<string>('VNP_RETURN_URL');
 
     const now = new Date();
-    const expireAt = new Date(now.getTime() + PAY_URL_TTL_MS);
 
     const prepared = await this.prisma.$transaction(async (tx) => {
       await tx.$queryRaw(
@@ -128,7 +106,15 @@ export class PaymentService implements OnModuleInit, OnModuleDestroy {
         throw new BadRequestException('Order is already paid');
       }
 
+      const windowEnd = new Date(order.createdAt.getTime() + PAY_URL_TTL_MS);
+      if (now >= windowEnd) {
+        throw new BadRequestException('Payment window expired');
+      }
+
       const amount = Number(order.total);
+      if (amount <= 0) {
+        throw new BadRequestException('VNPay requires a total greater than 0');
+      }
 
       const livePending = await tx.payment.findFirst({
         where: {
@@ -169,6 +155,7 @@ export class PaymentService implements OnModuleInit, OnModuleDestroy {
         paymentId: payment.id,
         txnRef,
         amount,
+        expireAt: windowEnd,
       };
     });
 
@@ -187,7 +174,7 @@ export class PaymentService implements OnModuleInit, OnModuleDestroy {
         vnp_ReturnUrl: returnUrl,
         vnp_IpAddr: ipAddr,
         vnp_CreateDate: formatVnpDate(now),
-        vnp_ExpireDate: formatVnpDate(expireAt),
+        vnp_ExpireDate: formatVnpDate(prepared.expireAt),
       },
       hashSecret,
     );
@@ -198,32 +185,24 @@ export class PaymentService implements OnModuleInit, OnModuleDestroy {
       orderCode: prepared.orderCode,
       txnRef: prepared.txnRef,
       amount: prepared.amount,
-      expireAt,
+      expireAt: prepared.expireAt,
       paymentUrl,
     };
   }
 
   /**
-   * Hết hạn sau 15 phút: chỉ PENDING (hoặc đơn chưa có payment) mới giữ cửa sổ.
-   * Dòng FAILED/EXPIRED không được coi là “còn sống” vì updateMany làm mới updatedAt.
+   * VNPay: hard-expire from order.createdAt (retrying the pay URL does not extend hold).
+   * COD / bank transfer: expire unpaid PENDING after COD_EXPIRE_HOURS (default 24h).
    */
-  async expireStaleVnpayOrders() {
-    const cutoff = new Date(Date.now() - PAY_URL_TTL_MS);
-    const liveAttempt: Prisma.PaymentWhereInput = {
-      OR: [
-        { status: PaymentTxnStatus.PAID },
-        {
-          status: PaymentTxnStatus.PENDING,
-          updatedAt: { gte: cutoff },
-        },
-      ],
-    };
+  async expireStaleOrders() {
+    const vnpayCutoff = new Date(Date.now() - PAY_URL_TTL_MS);
+    const codCutoff = new Date(Date.now() - this.getCodExpireMs());
 
     await this.prisma.payment.updateMany({
       where: {
         method: PaymentMethod.VNPAY,
         status: PaymentTxnStatus.PENDING,
-        updatedAt: { lt: cutoff },
+        updatedAt: { lt: vnpayCutoff },
       },
       data: {
         status: PaymentTxnStatus.FAILED,
@@ -233,63 +212,79 @@ export class PaymentService implements OnModuleInit, OnModuleDestroy {
 
     const staleOrders = await this.prisma.order.findMany({
       where: {
-        paymentMethod: PaymentMethod.VNPAY,
         status: OrderStatus.PENDING,
         paymentStatus: { not: PaymentStatus.PAID },
-        createdAt: { lt: cutoff },
-        payments: { none: liveAttempt },
+        OR: [
+          {
+            paymentMethod: PaymentMethod.VNPAY,
+            createdAt: { lt: vnpayCutoff },
+          },
+          {
+            paymentMethod: { in: [PaymentMethod.COD, PaymentMethod.BANK_TRANSFER] },
+            createdAt: { lt: codCutoff },
+          },
+        ],
       },
-      select: { id: true },
+      select: { id: true, paymentMethod: true },
     });
 
     for (const order of staleOrders) {
-      await this.prisma.$transaction(async (tx) => {
-        await tx.$queryRaw(
-          Prisma.sql`SELECT id FROM orders WHERE id = ${order.id} FOR UPDATE`,
+      try {
+        await this.prisma.$transaction(async (tx) => {
+          await tx.$queryRaw(
+            Prisma.sql`SELECT id FROM orders WHERE id = ${order.id} FOR UPDATE`,
+          );
+
+          const reason =
+            order.paymentMethod === PaymentMethod.VNPAY
+              ? 'VNPay payment expired'
+              : 'Unpaid order expired';
+
+          const cancelled = await tx.order.updateMany({
+            where: {
+              id: order.id,
+              status: OrderStatus.PENDING,
+              paymentStatus: { not: PaymentStatus.PAID },
+            },
+            data: {
+              status: OrderStatus.CANCELLED,
+              cancelledAt: new Date(),
+              cancelReason: reason,
+              paymentStatus: PaymentStatus.FAILED,
+            },
+          });
+          if (cancelled.count === 0) {
+            return;
+          }
+
+          const items = await tx.orderItem.findMany({
+            where: { orderId: order.id },
+          });
+          await restoreInventory(tx, items);
+
+          await tx.payment.updateMany({
+            where: {
+              orderId: order.id,
+              status: PaymentTxnStatus.PENDING,
+            },
+            data: {
+              status: PaymentTxnStatus.FAILED,
+              responseCode: 'EXPIRED',
+            },
+          });
+        });
+      } catch (err: unknown) {
+        this.logger.error(
+          `Failed to expire order ${order.id}`,
+          err instanceof Error ? err.stack : String(err),
         );
-
-        const paidOrLive = await tx.payment.findFirst({
-          where: { orderId: order.id, ...liveAttempt },
-        });
-        if (paidOrLive) {
-          return;
-        }
-
-        const cancelled = await tx.order.updateMany({
-          where: {
-            id: order.id,
-            status: OrderStatus.PENDING,
-            paymentStatus: { not: PaymentStatus.PAID },
-          },
-          data: {
-            status: OrderStatus.CANCELLED,
-            cancelledAt: new Date(),
-            cancelReason: 'VNPay payment expired',
-            paymentStatus: PaymentStatus.FAILED,
-          },
-        });
-        if (cancelled.count === 0) {
-          return;
-        }
-
-        const items = await tx.orderItem.findMany({
-          where: { orderId: order.id },
-        });
-        await restoreInventory(tx, items);
-
-        await tx.payment.updateMany({
-          where: {
-            orderId: order.id,
-            method: PaymentMethod.VNPAY,
-            status: PaymentTxnStatus.PENDING,
-          },
-          data: {
-            status: PaymentTxnStatus.FAILED,
-            responseCode: 'EXPIRED',
-          },
-        });
-      });
+      }
     }
+  }
+
+  /** @deprecated use expireStaleOrders */
+  expireStaleVnpayOrders() {
+    return this.expireStaleOrders();
   }
 
   /** Khách: lịch sử thanh toán của một đơn thuộc về mình. */
@@ -321,6 +316,7 @@ export class PaymentService implements OnModuleInit, OnModuleDestroy {
       ...(query.orderId && { orderId: query.orderId }),
       ...(query.status && { status: query.status }),
       ...(query.method && { method: query.method }),
+      ...(query.needsRefund != null && { needsRefund: query.needsRefund }),
     };
 
     const [total, payments] = await this.prisma.$transaction([
@@ -353,6 +349,13 @@ export class PaymentService implements OnModuleInit, OnModuleDestroy {
   /**
    * Admin xác nhận tay: chỉ COD / BANK_TRANSFER.
    * VNPay phải đi qua IPN. Mỗi lần xác nhận = một dòng ledger mới.
+   *
+   * REFUNDED:
+   * - CANCELLED: stock already restored at cancel — only book the refund.
+   * - COMPLETED: return — restore stock, decrement soldCount, mark RETURNED.
+   * - PENDING/CONFIRMED/SHIPPING: cancel + restore stock.
+   *
+   * FAILED on an open unpaid order: cancel + restore stock so inventory is not held.
    */
   async confirmManual(orderId: number, dto: UpdatePaymentStatusDto) {
     const allowedFrom: Record<PaymentStatus, PaymentStatus[]> = {
@@ -367,12 +370,18 @@ export class PaymentService implements OnModuleInit, OnModuleDestroy {
         Prisma.sql`SELECT id FROM orders WHERE id = ${orderId} FOR UPDATE`,
       );
 
-      const order = await tx.order.findUnique({ where: { id: orderId } });
+      const order = await tx.order.findUnique({
+        where: { id: orderId },
+        include: { items: true },
+      });
       if (!order) {
         throw new NotFoundException('Order not found');
       }
 
-      if (order.paymentMethod === PaymentMethod.VNPAY) {
+      if (
+        order.paymentMethod === PaymentMethod.VNPAY &&
+        dto.paymentStatus !== PaymentStatus.REFUNDED
+      ) {
         throw new BadRequestException(
           'VNPay orders are confirmed via IPN, not manually',
         );
@@ -389,6 +398,13 @@ export class PaymentService implements OnModuleInit, OnModuleDestroy {
         dto.paymentStatus !== PaymentStatus.REFUNDED
       ) {
         throw new BadRequestException('Cancelled orders only accept REFUNDED');
+      }
+
+      if (
+        order.status === OrderStatus.RETURNED &&
+        dto.paymentStatus !== PaymentStatus.REFUNDED
+      ) {
+        throw new BadRequestException('Returned orders only accept REFUNDED');
       }
 
       const txnStatus =
@@ -411,6 +427,34 @@ export class PaymentService implements OnModuleInit, OnModuleDestroy {
         },
       });
 
+      if (dto.paymentStatus === PaymentStatus.REFUNDED) {
+        await this.applyOrderRefund(tx, order);
+        return;
+      }
+
+      if (
+        dto.paymentStatus === PaymentStatus.FAILED &&
+        order.status === OrderStatus.PENDING
+      ) {
+        const cancelled = await tx.order.updateMany({
+          where: {
+            id: order.id,
+            status: OrderStatus.PENDING,
+            paymentStatus: { not: PaymentStatus.PAID },
+          },
+          data: {
+            status: OrderStatus.CANCELLED,
+            cancelledAt: new Date(),
+            cancelReason: 'Payment failed',
+            paymentStatus: PaymentStatus.FAILED,
+          },
+        });
+        if (cancelled.count > 0) {
+          await restoreInventory(tx, order.items);
+        }
+        return;
+      }
+
       await tx.order.update({
         where: { id: order.id },
         data: {
@@ -421,6 +465,141 @@ export class PaymentService implements OnModuleInit, OnModuleDestroy {
     });
 
     return this.findByOrderId(orderId);
+  }
+
+  /**
+   * Mark a gateway capture as refunded at VNPay (duplicate / late IPN / cancelled paid order).
+   * Does not restore inventory — that already happened at cancel/return, or must not
+   * happen for a duplicate charge on a still-active order.
+   */
+  async settleRefund(paymentId: number) {
+    await this.prisma.$transaction(async (tx) => {
+      const payment = await tx.payment.findUnique({
+        where: { id: paymentId },
+      });
+      if (!payment) {
+        throw new NotFoundException('Payment not found');
+      }
+
+      await tx.$queryRaw(
+        Prisma.sql`SELECT id FROM orders WHERE id = ${payment.orderId} FOR UPDATE`,
+      );
+
+      const locked = await tx.payment.findUnique({
+        where: { id: paymentId },
+        include: { order: true },
+      });
+      if (!locked) {
+        throw new NotFoundException('Payment not found');
+      }
+
+      if (!locked.needsRefund || locked.status !== PaymentTxnStatus.PAID) {
+        throw new BadRequestException(
+          'Only PAID payments flagged needsRefund can be settled',
+        );
+      }
+
+      await tx.payment.update({
+        where: { id: locked.id },
+        data: {
+          status: PaymentTxnStatus.REFUNDED,
+          needsRefund: false,
+          responseCode: locked.responseCode ?? 'REFUNDED',
+        },
+      });
+
+      const remaining = await tx.payment.count({
+        where: {
+          orderId: locked.orderId,
+          status: PaymentTxnStatus.PAID,
+          needsRefund: true,
+        },
+      });
+
+      if (
+        remaining === 0 &&
+        (locked.order.status === OrderStatus.CANCELLED ||
+          locked.order.status === OrderStatus.RETURNED)
+      ) {
+        await tx.order.update({
+          where: { id: locked.orderId },
+          data: { paymentStatus: PaymentStatus.REFUNDED },
+        });
+      }
+    });
+
+    const settled = await this.prisma.payment.findUniqueOrThrow({
+      where: { id: paymentId },
+    });
+    return this.toPaymentResponse(settled);
+  }
+
+  private async applyOrderRefund(
+    tx: Prisma.TransactionClient,
+    order: Prisma.OrderGetPayload<{ include: { items: true } }>,
+  ) {
+    await tx.payment.updateMany({
+      where: { orderId: order.id, needsRefund: true },
+      data: { needsRefund: false, status: PaymentTxnStatus.REFUNDED },
+    });
+
+    if (order.status === OrderStatus.CANCELLED) {
+      await tx.order.update({
+        where: { id: order.id },
+        data: { paymentStatus: PaymentStatus.REFUNDED },
+      });
+      return;
+    }
+
+    if (order.status === OrderStatus.RETURNED) {
+      await tx.order.update({
+        where: { id: order.id },
+        data: { paymentStatus: PaymentStatus.REFUNDED },
+      });
+      return;
+    }
+
+    if (order.status === OrderStatus.COMPLETED) {
+      await restoreInventory(tx, order.items);
+      await adjustSoldCount(tx, order.items, 'decrement');
+      await tx.order.update({
+        where: { id: order.id },
+        data: {
+          status: OrderStatus.RETURNED,
+          paymentStatus: PaymentStatus.REFUNDED,
+        },
+      });
+      return;
+    }
+
+    const cancelled = await tx.order.updateMany({
+      where: {
+        id: order.id,
+        status: { in: [OrderStatus.PENDING, OrderStatus.CONFIRMED, OrderStatus.SHIPPING] },
+      },
+      data: {
+        status: OrderStatus.CANCELLED,
+        cancelledAt: new Date(),
+        cancelReason: order.cancelReason ?? 'Refunded',
+        paymentStatus: PaymentStatus.REFUNDED,
+      },
+    });
+    if (cancelled.count > 0) {
+      await restoreInventory(tx, order.items);
+    } else {
+      await tx.order.update({
+        where: { id: order.id },
+        data: { paymentStatus: PaymentStatus.REFUNDED },
+      });
+    }
+  }
+
+  private getCodExpireMs() {
+    const hours = Number(
+      this.configService.get('COD_EXPIRE_HOURS') ?? DEFAULT_COD_EXPIRE_HOURS,
+    );
+    const safe = Number.isFinite(hours) && hours > 0 ? hours : DEFAULT_COD_EXPIRE_HOURS;
+    return safe * 60 * 60 * 1000;
   }
 
   private async findByOrderId(orderId: number) {
@@ -441,6 +620,7 @@ export class PaymentService implements OnModuleInit, OnModuleDestroy {
     transactionId: string | null;
     bankCode: string | null;
     responseCode: string | null;
+    needsRefund: boolean;
     paidAt: Date | null;
     createdAt: Date;
     updatedAt: Date;
@@ -455,6 +635,7 @@ export class PaymentService implements OnModuleInit, OnModuleDestroy {
       transactionId: payment.transactionId,
       bankCode: payment.bankCode,
       responseCode: payment.responseCode,
+      needsRefund: payment.needsRefund,
       paidAt: payment.paidAt,
       createdAt: payment.createdAt,
       updatedAt: payment.updatedAt,
@@ -505,7 +686,7 @@ export class PaymentService implements OnModuleInit, OnModuleDestroy {
 
     const rawPayload = query as Prisma.InputJsonValue;
 
-    return this.prisma.$transaction(async (tx) => {
+    const result = await this.prisma.$transaction(async (tx) => {
       const found = await tx.payment.findUnique({
         where: { txnRef },
       });
@@ -559,8 +740,13 @@ export class PaymentService implements OnModuleInit, OnModuleDestroy {
         return { RspCode: '00', Message: 'Confirm Success' };
       }
 
-      // Gateway charged. Record PAID on this row even if the order was cancelled
-      // (admin must refund). Do not reopen a cancelled order.
+      const order = payment.order;
+      const extraCharge =
+        !order ||
+        order.status === OrderStatus.CANCELLED ||
+        order.status === OrderStatus.RETURNED ||
+        order.paymentStatus === PaymentStatus.PAID;
+
       const locked = await tx.payment.updateMany({
         where: {
           id: payment.id,
@@ -571,20 +757,17 @@ export class PaymentService implements OnModuleInit, OnModuleDestroy {
           ...gatewayFields,
           responseCode: query.vnp_ResponseCode || '00',
           paidAt: new Date(),
+          needsRefund: extraCharge,
         },
       });
-
       if (locked.count === 0) {
         return { RspCode: '02', Message: 'Order already confirmed' };
       }
 
-      const order = await tx.order.findUnique({
-        where: { id: payment.orderId },
-      });
-
-      if (!order || order.status === OrderStatus.CANCELLED) {
+      if (extraCharge) {
         this.logger.warn(
-          `VNPay IPN paid cancelled order ${payment.orderId} txnRef=${txnRef} — refund required`,
+          `VNPay IPN needs refund order=${payment.orderId} txnRef=${txnRef} ` +
+          `status=${order?.status} paymentStatus=${order?.paymentStatus}`,
         );
         return { RspCode: '00', Message: 'Confirm Success' };
       }
@@ -604,7 +787,23 @@ export class PaymentService implements OnModuleInit, OnModuleDestroy {
 
       return { RspCode: '00', Message: 'Confirm Success' };
     });
+    const payment = await this.prisma.payment.findUnique({
+      where: { txnRef }, include: { order: true }
+    })
+    //websocket
+    if (payment?.order?.userId && payment.status === PaymentTxnStatus.PAID && payment.order.paymentStatus === PaymentStatus.PAID) {
+      this.realtimeService.notifyOrderUpdated(payment.order.userId, {
+        orderId: payment.orderId,
+        orderCode: payment.order.orderCode,
+        status: payment.order.status,
+        paymentStatus: payment.order.paymentStatus,
+        paidAt: payment.paidAt,
+      });
+    }
+
+    return result;
   }
+
 
   /**
    * Local/sandbox: VNPay IPN cannot reach localhost, so the return URL applies
@@ -717,7 +916,8 @@ export class PaymentService implements OnModuleInit, OnModuleDestroy {
       responseCode,
     };
 
-    if (payment.order.status === OrderStatus.CANCELLED) {
+    if (payment.order.status === OrderStatus.CANCELLED ||
+      payment.order.status === OrderStatus.RETURNED) {
       return redirect('failed', {
         ...base,
         message:
