@@ -1,5 +1,6 @@
 import { INestApplication } from '@nestjs/common';
 import { IoAdapter } from '@nestjs/platform-socket.io';
+import type { Server as HttpServer } from 'http';
 import { Server, ServerOptions } from 'socket.io';
 
 /**
@@ -13,7 +14,8 @@ export class SocketIoAdapter extends IoAdapter {
   }
 
   createIOServer(_port: number, options?: ServerOptions) {
-    return new Server(this.app.getHttpServer(), {
+    const httpServer = this.app.getHttpServer() as HttpServer;
+    return new Server(httpServer, {
       ...options,
       path: '/socket.io',
       cors: {

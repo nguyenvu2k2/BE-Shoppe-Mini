@@ -23,7 +23,7 @@ export class MailService {
       this.configService.get<string>('MAIL_FROM') ??
       'Shoppe Mini <onboarding@resend.dev>';
     const expiryMinutes =
-      this.configService.get('PASSWORD_RESET_EXPIRY_MINUTES') ?? 30;
+      this.configService.get<string>('PASSWORD_RESET_EXPIRY_MINUTES') ?? '30';
     const subject = 'Đặt lại mật khẩu Shoppe Mini';
     const text = [
       'Bạn vừa yêu cầu đặt lại mật khẩu.',

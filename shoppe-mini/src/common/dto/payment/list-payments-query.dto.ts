@@ -41,10 +41,10 @@ export class ListPaymentsQueryDto {
   method?: PaymentMethod;
 
   @IsOptional()
-  @Transform(({ value }) => {
+  @Transform(({ value }: { value: unknown }): boolean | undefined => {
     if (value === true || value === 'true' || value === '1') return true;
     if (value === false || value === 'false' || value === '0') return false;
-    return value;
+    return undefined;
   })
   @IsBoolean()
   needsRefund?: boolean;

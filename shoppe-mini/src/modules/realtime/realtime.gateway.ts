@@ -58,7 +58,8 @@ export class RealtimeGateway
       return;
     }
 
-    client.data.userId = user.id;
+    const data = client.data as { userId?: number };
+    data.userId = user.id;
     await client.join('user:' + user.id);
   }
 

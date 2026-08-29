@@ -34,7 +34,7 @@ export class RedisService implements OnModuleInit, OnModuleDestroy {
 
     try {
       await client.connect();
-      this.client = client as RedisClientType;
+      this.client = client;
       this.ready = true;
       this.logger.log(`Redis connected (${this.url})`);
     } catch (err: unknown) {
