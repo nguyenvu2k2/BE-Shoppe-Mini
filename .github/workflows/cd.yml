@@ -1,0 +1,114 @@
+# CD — chỉ chạy sau khi workflow CI trên main thành công.
+#
+# Job publish: luôn build Dockerfile → đẩy GHCR (Continuous Delivery).
+# Job deploy: chỉ chạy khi repo Variable ENABLE_VPS_DEPLOY=true
+#             + đã cấu hình Secrets SSH_* và GHCR_READ_TOKEN.
+#
+# Image:
+#   ghcr.io/<github-owner>/shoppe-api:<commit-sha>
+#   ghcr.io/<github-owner>/shoppe-api:latest
+
+name: CD
+
+on:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+    branches: [main]
+
+concurrency:
+  group: cd-${{ github.workflow }}-${{ github.event.workflow_run.head_branch }}
+  cancel-in-progress: true
+
+env:
+  IMAGE_NAME: ghcr.io/${{ github.repository_owner }}/shoppe-api
+  IMAGE_TAG: ${{ github.event.workflow_run.head_sha }}
+
+jobs:
+  publish:
+    name: build · push GHCR
+    if: ${{ github.event.workflow_run.conclusion == 'success' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - name: Checkout (commit đã pass CI)
+        uses: actions/checkout@v5
+        with:
+          ref: ${{ env.IMAGE_TAG }}
+
+      - name: Login GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: ./shoppe-mini
+          file: ./shoppe-mini/Dockerfile
+          push: true
+          tags: |
+            ${{ env.IMAGE_NAME }}:${{ env.IMAGE_TAG }}
+            ${{ env.IMAGE_NAME }}:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  deploy:
+    name: SSH · migrate · compose up
+    needs: publish
+    # Settings → Secrets and variables → Actions → Variables:
+    #   ENABLE_VPS_DEPLOY = true
+    if: ${{ vars.ENABLE_VPS_DEPLOY == 'true' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    environment: production
+
+    steps:
+      - name: Deploy over SSH
+        uses: appleboy/ssh-action@v1.2.2
+        env:
+          IMAGE_NAME: ${{ env.IMAGE_NAME }}
+          IMAGE_TAG: ${{ env.IMAGE_TAG }}
+          GHCR_USER: ${{ github.repository_owner }}
+          GHCR_TOKEN: ${{ secrets.GHCR_READ_TOKEN }}
+          # Optional Variable: DEPLOY_PATH (default /opt/shoppe-mini trên VPS)
+          DEPLOY_PATH: ${{ vars.DEPLOY_PATH }}
+        with:
+          host: ${{ secrets.SSH_HOST }}
+          username: ${{ secrets.SSH_USER }}
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          # Optional Variable: SSH_PORT (default 22)
+          port: ${{ vars.SSH_PORT || 22 }}
+          envs: IMAGE_NAME,IMAGE_TAG,GHCR_USER,GHCR_TOKEN,DEPLOY_PATH
+          script: |
+            set -euo pipefail
+            APP_DIR="${DEPLOY_PATH:-/opt/shoppe-mini}"
+            cd "$APP_DIR"
+
+            if [ -z "${GHCR_TOKEN:-}" ]; then
+              echo "GHCR_READ_TOKEN secret is empty — cannot docker pull private GHCR image"
+              exit 1
+            fi
+
+            echo "$GHCR_TOKEN" | docker login ghcr.io -u "$GHCR_USER" --password-stdin
+
+            export IMAGE_NAME IMAGE_TAG
+            if [ -f scripts/vps-deploy.sh ]; then
+              chmod +x scripts/vps-deploy.sh
+              ./scripts/vps-deploy.sh
+            else
+              docker compose -f docker-compose.prod.yml pull api
+              docker compose -f docker-compose.prod.yml run --rm api npx prisma migrate deploy
+              docker compose -f docker-compose.prod.yml up -d
+            fi
+
+            docker compose -f docker-compose.prod.yml ps

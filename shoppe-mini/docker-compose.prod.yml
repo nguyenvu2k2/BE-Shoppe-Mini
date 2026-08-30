@@ -1,0 +1,62 @@
+# Production trên VPS — API kéo image từ GHCR (không build trên server).
+#
+# Lần đầu trên VPS (trong thư mục có file này + .env):
+#   export IMAGE_NAME=ghcr.io/<github-user>/shoppe-api
+#   export IMAGE_TAG=latest
+#   docker compose -f docker-compose.prod.yml up -d
+#
+# Deploy bản mới (sau docker login ghcr.io):
+#   export IMAGE_TAG=<commit-sha>
+#   docker compose -f docker-compose.prod.yml pull api
+#   docker compose -f docker-compose.prod.yml run --rm api npx prisma migrate deploy
+#   docker compose -f docker-compose.prod.yml up -d
+#
+# Khác bản local: không publish cổng Postgres/Redis ra ngoài; VNP mặc định false.
+
+services:
+  db:
+    image: postgres:16
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+      POSTGRES_DB: ${POSTGRES_DB:-shoppe-mini}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-postgres} -d ${POSTGRES_DB:-shoppe-mini}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  api:
+    # Bắt buộc set IMAGE_NAME trên VPS, ví dụ: ghcr.io/your-user/shoppe-api
+    image: ${IMAGE_NAME}:${IMAGE_TAG:-latest}
+    restart: unless-stopped
+    ports:
+      - "${API_PORT:-3001}:3001"
+    env_file:
+      - .env
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB:-shoppe-mini}?schema=public
+      REDIS_URL: redis://redis:6379
+      NODE_ENV: production
+      PORT: 3001
+      VNP_CONFIRM_ON_RETURN: ${VNP_CONFIRM_ON_RETURN:-false}
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+volumes:
+  postgres_data:

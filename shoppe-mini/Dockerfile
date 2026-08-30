@@ -45,11 +45,13 @@ RUN apt-get update \
   && rm -rf /var/lib/apt/lists/*
 
 # Artifact từ stage builder — không COPY source .ts
+# prisma (dependencies) còn sau npm prune — dùng cho: npx prisma migrate deploy
 COPY --from=builder --chown=node:node /app/package.json ./
 COPY --from=builder --chown=node:node /app/node_modules ./node_modules
 COPY --from=builder --chown=node:node /app/dist ./dist
 COPY --from=builder --chown=node:node /app/generated ./generated
 COPY --from=builder --chown=node:node /app/prisma ./prisma
+COPY --from=builder --chown=node:node /app/prisma.config.ts ./prisma.config.ts
 
 USER node
 
