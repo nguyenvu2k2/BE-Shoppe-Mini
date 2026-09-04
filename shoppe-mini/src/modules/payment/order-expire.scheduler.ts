@@ -101,10 +101,14 @@ export class OrderExpireScheduler implements OnApplicationBootstrap, OnModuleDes
 
   private bullmqConnection(): ConnectionOptions {
     const url = new URL(this.redis.url);
+  
     return {
       host: url.hostname,
       port: Number(url.port || 6379),
+      username: url.username || undefined,
+      password: url.password || undefined,
       maxRetriesPerRequest: null,
+      family: 0,
     };
   }
 }
