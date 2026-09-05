@@ -1,0 +1,4 @@
+# Chỉ áp dụng khi Railway Root Directory = shoppe-mini
+# Không seed lúc start — migrate rồi chạy bản đã build.
+[deploy]
+startCommand = "npx prisma migrate deploy && node dist/src/main.js"
