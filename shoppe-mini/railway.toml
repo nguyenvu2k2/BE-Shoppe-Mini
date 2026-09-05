@@ -1,4 +1,9 @@
-# Chỉ áp dụng khi Railway Root Directory = shoppe-mini
-# Không seed lúc start — migrate rồi chạy bản đã build.
+# Root Directory trên Railway phải là shoppe-mini
+#
+# migrate ở release — xong rồi mới nhận traffic.
+# Gộp migrate vào start → lúc migrate không có process listen → proxy 502.
 [deploy]
-startCommand = "npx prisma migrate deploy && node dist/src/main.js"
+releaseCommand = "npx prisma migrate deploy"
+startCommand = "node dist/src/main.js"
+healthcheckPath = "/"
+healthcheckTimeout = 30

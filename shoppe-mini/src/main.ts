@@ -25,6 +25,12 @@ async function bootstrap() {
     origin: process.env.FRONTEND_URL ?? 'http://localhost:3000',
     credentials: true,
   });
-  await app.listen(process.env.PORT ?? 3001, '0.0.0.0');
+  const port = Number(process.env.PORT ?? 3001);
+  await app.listen(port, '0.0.0.0');
+  console.log(`Listening on http://0.0.0.0:${port}`);
 }
-void bootstrap();
+
+void bootstrap().catch((err: unknown) => {
+  console.error('Bootstrap failed', err);
+  process.exit(1);
+});
