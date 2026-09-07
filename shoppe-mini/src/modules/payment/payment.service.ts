@@ -671,6 +671,14 @@ export class PaymentService {
   ): Promise<VnpIpnResponse> {
     const hashSecret = this.configService.getOrThrow<string>('VNP_HASH_SECRET');
     if (!verifyVnpSecureHash(query, hashSecret)) {
+      this.logger.warn(
+        `VNPay IPN invalid signature txnRef=${query.vnp_TxnRef ?? 'n/a'} keys=${Object.keys(
+          query,
+        )
+          .filter((key) => key.startsWith('vnp_'))
+          .sort()
+          .join(',')}`,
+      );
       return { RspCode: '97', Message: 'Invalid signature' };
     }
 

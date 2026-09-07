@@ -23,7 +23,7 @@ import { CreateVnpayPaymentDto } from '../../common/dto/payment/create-vnpay-pay
 import { ListPaymentsQueryDto } from '../../common/dto/payment/list-payments-query.dto';
 import type { RequestWithCookies } from '../../common/auth/request-with-cookies.type';
 import { PaymentService } from './payment.service';
-import { flattenVnpQuery, getClientIp } from '../../common/utils/vnpay.util';
+import { getClientIp, vnpQueryFromRequest } from '../../common/utils/vnpay.util';
 
 const validateBody = new ValidationPipe({
   whitelist: true,
@@ -42,11 +42,7 @@ export class PaymentController {
    */
   @Get('vnpay/ipn')
   handleVnpayIpn(@Req() req: RequestWithCookies) {
-    return this.paymentService.handleVnpayIpn(
-      flattenVnpQuery(
-        req.query as Record<string, string | string[] | undefined>,
-      ),
-    );
+    return this.paymentService.handleVnpayIpn(vnpQueryFromRequest(req as any));
   }
 
   /**
@@ -60,9 +56,7 @@ export class PaymentController {
     @Res() res: Response,
   ) {
     const result = await this.paymentService.handleVnpayReturn(
-      flattenVnpQuery(
-        req.query as Record<string, string | string[] | undefined>,
-      ),
+      vnpQueryFromRequest(req as any),
     );
 
     const accept = String(req.headers.accept ?? '');
