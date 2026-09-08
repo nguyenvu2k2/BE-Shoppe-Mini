@@ -814,21 +814,10 @@ export class PaymentService {
 
 
   /**
-   * Local/sandbox: VNPay IPN cannot reach localhost, so the return URL applies
-   * the same verified payload. Production stays IPN-only unless
-   * VNP_CONFIRM_ON_RETURN=true.
-   */
-  private confirmOnReturnEnabled() {
-    const flag = this.configService.get<string>('VNP_CONFIRM_ON_RETURN');
-    if (flag === 'true') return true;
-    if (flag === 'false') return false;
-    return this.configService.get<string>('NODE_ENV') !== 'production';
-  }
-
-  /**
    * Browser return from VNPay. Verify checksum, then read DB.
-   * Production: do not mark PAID here (IPN is source of truth).
-   * Non-production: apply the return payload so local tests do not hang on pending.
+   * If the txn is still PENDING, apply the same verified payload as IPN so the
+   * FE is not stuck on `status=pending` when IPN is delayed or never arrives.
+   * Duplicate IPN after this is idempotent (RspCode 02).
    */
   async handleVnpayReturn(query: Record<string, string>): Promise<VnpReturnResult> {
     const hashSecret = this.configService.getOrThrow<string>('VNP_HASH_SECRET');
@@ -892,10 +881,7 @@ export class PaymentService {
       });
     }
 
-    if (
-      this.confirmOnReturnEnabled() &&
-      payment.status === PaymentTxnStatus.PENDING
-    ) {
+    if (payment.status === PaymentTxnStatus.PENDING) {
       try {
         await this.processVnpayIpn(query);
       } catch (err: unknown) {

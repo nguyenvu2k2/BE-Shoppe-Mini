@@ -50,8 +50,6 @@ services:
       REDIS_URL: redis://redis:6379
       NODE_ENV: production
       PORT: 3001
-      # Sandbox trên máy: return URL ghi PAID (IPN không vào localhost).
-      # Production thật: false + VNP_IPN_URL public.
       VNP_CONFIRM_ON_RETURN: ${VNP_CONFIRM_ON_RETURN:-true}
     depends_on:
       db:

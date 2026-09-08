@@ -48,7 +48,7 @@ export class PaymentController {
   /**
    * VNPay return — browser lands here after paying.
    * HTML → redirect FE (no hash). JSON (Postman/FE fetch) → payload only.
-   * Does not mark the order PAID.
+   * If the txn is still PENDING, a valid checksum marks it PAID (same as IPN).
    */
   @Get('vnpay/return')
   async handleVnpayReturn(

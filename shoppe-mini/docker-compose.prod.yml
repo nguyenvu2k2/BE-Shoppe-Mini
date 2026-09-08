@@ -11,7 +11,7 @@
 #   docker compose -f docker-compose.prod.yml run --rm api npx prisma migrate deploy
 #   docker compose -f docker-compose.prod.yml up -d
 #
-# Khác bản local: không publish cổng Postgres/Redis ra ngoài; VNP mặc định false.
+# Khác bản local: không publish cổng Postgres/Redis ra ngoài.
 
 services:
   db:
@@ -51,7 +51,7 @@ services:
       REDIS_URL: redis://redis:6379
       NODE_ENV: production
       PORT: 3001
-      VNP_CONFIRM_ON_RETURN: ${VNP_CONFIRM_ON_RETURN:-false}
+      VNP_CONFIRM_ON_RETURN: ${VNP_CONFIRM_ON_RETURN:-true}
     depends_on:
       db:
         condition: service_healthy
