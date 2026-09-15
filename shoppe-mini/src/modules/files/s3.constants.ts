@@ -8,6 +8,7 @@ export const S3_FOLDERS = {
   AVATARS: 'avatars',
   CATEGORIES: 'categories',
   PRODUCTS: 'products',
+  BANNERS: 'banners',
   TEMP: 'temp',
 } as const;
 

@@ -1,0 +1,21 @@
+model Banner {
+  id Int @id @default(autoincrement())
+
+  title     String
+  /// Public S3 URL. Null until admin uploads an image.
+  image     String?
+  /// Absolute URL or in-app path (e.g. /products/slug).
+  link      String?
+  position  BannerPosition @default(HOME)
+  sortOrder Int            @default(0) @map("sort_order")
+  isActive  Boolean        @default(true) @map("is_active")
+
+  startsAt DateTime? @map("starts_at")
+  endsAt   DateTime? @map("ends_at")
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@index([isActive, position, sortOrder])
+  @@map("banners")
+}

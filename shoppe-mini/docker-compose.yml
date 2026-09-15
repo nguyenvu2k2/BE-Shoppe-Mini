@@ -1,5 +1,8 @@
-# Chạy cả API + Postgres:
+# Local (FE http://localhost:3000). FRONTEND_URL/NODE_ENV bị ghi đè — .env
+# có thể giữ URL Vercel cho Railway/prod.
 #   docker compose up --build
+# Production VPS:
+#   docker compose -f docker-compose.prod.yml up -d
 # Tắt và xóa container (giữ data):
 #   docker compose down
 # Xóa luôn volume DB:
@@ -48,8 +51,13 @@ services:
     environment:
       DATABASE_URL: postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-password}@db:5432/${POSTGRES_DB:-shoppe-mini}?schema=public
       REDIS_URL: redis://redis:6379
-      NODE_ENV: production
+      # Local stack — do not inherit production FRONTEND_URL from .env (CORS + cookies).
+      NODE_ENV: development
       PORT: 3001
+      FRONTEND_URL: http://localhost:3000
+      GOOGLE_CALLBACK_URL: http://localhost:3000/auth/google/callback
+      # Image has no .env; this must be in process.env or JwtModule crashes before listen(:3001).
+      JWT_SECRET: ${JWT_SECRET:?set JWT_SECRET in .env next to this compose file}
       VNP_CONFIRM_ON_RETURN: ${VNP_CONFIRM_ON_RETURN:-true}
     depends_on:
       db:

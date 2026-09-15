@@ -24,6 +24,7 @@ import { PrismaService } from '../../prisma/prisma.service';
 import { computeShippingFee } from '../../common/utils/shipping';
 import { roundMoney, unitPriceForLine } from '../../common/utils/unit-price';
 import { PaymentService } from '../payment/payment.service';
+import { VoucherService } from '../voucher/voucher.service';
 import {
   InventoryRestoreError,
   adjustSoldCount,
@@ -54,6 +55,7 @@ export class OrderService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly paymentService: PaymentService,
+    private readonly voucherService: VoucherService,
   ) {}
 
   // ==================== CUSTOMER ====================
@@ -62,6 +64,7 @@ export class OrderService {
    * Checkout toàn bộ giỏ hàng:
    * validate address của user → validate từng item (ACTIVE + đủ stock)
    * → transaction: trừ kho, tạo order + snapshot items, xóa cart items.
+   * Optional voucherCode: lock voucher, snapshot discount on the order, write usage.
    * VNPAY: tạo Payment PENDING + paymentUrl. Nếu gen URL lỗi, vẫn trả order
    * (vnpay: null, vnpayError) để FE gọi POST /payments/vnpay/create.
    */
@@ -175,7 +178,23 @@ export class OrderService {
         lines.reduce((sum, l) => sum + l.unitPrice * l.quantity, 0),
       );
       const shippingFee = computeShippingFee();
-      const total = roundMoney(subtotal + shippingFee);
+
+      let discountAmount = 0;
+      let voucherId: number | null = null;
+      let voucherCode: string | null = null;
+
+      if (dto.voucherCode?.trim()) {
+        const quoted = await this.voucherService.redeemInTx(tx, {
+          userId,
+          code: dto.voucherCode,
+          subtotal,
+        });
+        discountAmount = quoted.discountAmount;
+        voucherId = quoted.voucherId;
+        voucherCode = quoted.code;
+      }
+
+      const total = roundMoney(subtotal - discountAmount + shippingFee);
 
       if (dto.paymentMethod === PaymentMethod.VNPAY && total <= 0) {
         throw new BadRequestException('VNPay requires a total greater than 0');
@@ -209,6 +228,9 @@ export class OrderService {
           note: dto.note?.trim() || null,
           subtotal: new Prisma.Decimal(subtotal),
           shippingFee: new Prisma.Decimal(shippingFee),
+          discountAmount: new Prisma.Decimal(discountAmount),
+          voucherId,
+          voucherCode,
           total: new Prisma.Decimal(total),
           items: {
             createMany: {
@@ -227,6 +249,21 @@ export class OrderService {
         },
         include: orderInclude,
       });
+
+      if (voucherId != null) {
+        await tx.voucherUsage.create({
+          data: {
+            voucherId,
+            userId,
+            orderId: created.id,
+            discountAmount: new Prisma.Decimal(discountAmount),
+          },
+        });
+        await tx.voucher.update({
+          where: { id: voucherId },
+          data: { usedCount: { increment: 1 } },
+        });
+      }
 
       await tx.cartItem.deleteMany({
         where: {
@@ -616,6 +653,8 @@ export class OrderService {
       paymentMethod: order.paymentMethod,
       subtotal: Number(order.subtotal),
       shippingFee: Number(order.shippingFee),
+      discountAmount: Number(order.discountAmount),
+      voucherCode: order.voucherCode,
       total: Number(order.total),
       note: order.note,
       cancelReason: order.cancelReason,

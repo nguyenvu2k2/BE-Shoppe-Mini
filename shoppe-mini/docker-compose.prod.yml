@@ -51,6 +51,7 @@ services:
       REDIS_URL: redis://redis:6379
       NODE_ENV: production
       PORT: 3001
+      JWT_SECRET: ${JWT_SECRET:?set JWT_SECRET in .env next to this compose file}
       VNP_CONFIRM_ON_RETURN: ${VNP_CONFIRM_ON_RETURN:-true}
     depends_on:
       db:

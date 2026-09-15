@@ -14,6 +14,8 @@ export const RedisKeys = {
   categoryList: `${REDIS_PREFIX}:cat:list`,
   categoryTree: `${REDIS_PREFIX}:cat:tree`,
   categoryOne: (idOrSlug: string) => `${REDIS_PREFIX}:cat:one:${idOrSlug}`,
+  bannerList: (position: string) => `${REDIS_PREFIX}:banner:list:${position}`,
+  bannerPrefix: `${REDIS_PREFIX}:banner:`,
   permissions: (userId: number) => `${REDIS_PREFIX}:perm:${userId}`,
   rateLimit: (scope: string, id: string) =>
     `${REDIS_PREFIX}:rl:${scope}:${id}`,

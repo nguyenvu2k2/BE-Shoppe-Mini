@@ -8,12 +8,13 @@ import {
 } from '@nestjs/websockets';
 import { Server, Socket } from 'socket.io';
 import type { JwtPayload } from '../../common/auth/jwt-payload.type';
+import { resolveCorsOrigins } from '../../common/config/load-env';
 import { PrismaService } from '../../prisma/prisma.service';
 
 @WebSocketGateway({
   path: '/socket.io',
   cors: {
-    origin: process.env.FRONTEND_URL ?? 'http://localhost:3000',
+    origin: resolveCorsOrigins(),
     credentials: true,
   },
 })

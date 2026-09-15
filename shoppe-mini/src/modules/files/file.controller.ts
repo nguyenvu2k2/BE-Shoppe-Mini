@@ -12,7 +12,7 @@ import { FileInterceptor } from '@nestjs/platform-express';
 import { memoryStorage } from 'multer';
 import { AuthGuard } from '../../common/auth/auth.guard';
 import { CurrentUser } from '../../common/auth/current-user.decorator';
-import { PERMISSIONS } from '../../common/auth/permissions';
+import { PERMISSIONS, type PermissionName } from '../../common/auth/permissions';
 import { userHasPermission } from '../../common/auth/user-has-permission';
 import { PrismaService } from '../../prisma/prisma.service';
 import { FileService } from './file.service';
@@ -24,6 +24,12 @@ import {
   type S3AllowedMimeType,
   type S3Folder,
 } from './s3.constants';
+
+const FOLDER_UPDATE_PERMISSION: Partial<Record<S3Folder, PermissionName>> = {
+  [S3_FOLDERS.PRODUCTS]: PERMISSIONS.PRODUCT_UPDATE,
+  [S3_FOLDERS.CATEGORIES]: PERMISSIONS.CATEGORY_UPDATE,
+  [S3_FOLDERS.BANNERS]: PERMISSIONS.BANNER_UPDATE,
+};
 
 @Controller('files')
 @UseGuards(AuthGuard)
@@ -37,7 +43,7 @@ export class FileController {
    * POST /files/upload?folder=avatars
    * multipart field name: `file`
    * Requires accessToken cookie.
-   * products/categories folders require catalog update permissions.
+   * products/categories/banners folders require the matching update permission.
    */
   @Post('upload')
   @UseInterceptors(
@@ -81,14 +87,10 @@ export class FileController {
   }
 
   private async assertFolderAccess(userId: number, folder: S3Folder) {
-    if (folder === S3_FOLDERS.AVATARS || folder === S3_FOLDERS.TEMP) {
+    const required = FOLDER_UPDATE_PERMISSION[folder];
+    if (!required) {
       return;
     }
-
-    const required =
-      folder === S3_FOLDERS.PRODUCTS
-        ? PERMISSIONS.PRODUCT_UPDATE
-        : PERMISSIONS.CATEGORY_UPDATE;
 
     const allowed = await userHasPermission(this.prisma, userId, required);
     if (!allowed) {

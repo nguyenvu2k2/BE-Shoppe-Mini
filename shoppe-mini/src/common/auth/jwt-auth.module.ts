@@ -1,6 +1,7 @@
 import { Global, Module } from '@nestjs/common';
 import { ConfigModule, ConfigService } from '@nestjs/config';
 import { JwtModule } from '@nestjs/jwt';
+import { resolveJwtSecret } from '../config/load-env';
 import { AuthGuard } from './auth.guard';
 import { PermissionsGuard } from './permissions.guard';
 
@@ -16,7 +17,7 @@ import { PermissionsGuard } from './permissions.guard';
       imports: [ConfigModule],
       inject: [ConfigService],
       useFactory: (configService: ConfigService) => ({
-        secret: configService.getOrThrow<string>('JWT_SECRET'),
+        secret: resolveJwtSecret(configService.get<string>('JWT_SECRET')),
         signOptions: { expiresIn: '1h' },
       }),
     }),

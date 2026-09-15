@@ -18,6 +18,16 @@ export const PERMISSIONS = {
   CATEGORY_UPDATE: 'category:update',
   CATEGORY_DELETE: 'category:delete',
 
+  VOUCHER_CREATE: 'voucher:create',
+  VOUCHER_READ: 'voucher:read',
+  VOUCHER_UPDATE: 'voucher:update',
+  VOUCHER_DELETE: 'voucher:delete',
+
+  BANNER_CREATE: 'banner:create',
+  BANNER_READ: 'banner:read',
+  BANNER_UPDATE: 'banner:update',
+  BANNER_DELETE: 'banner:delete',
+
   ORDER_READ: 'order:read',
   ORDER_UPDATE: 'order:update',
 

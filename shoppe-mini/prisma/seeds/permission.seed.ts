@@ -5,6 +5,8 @@ import { productPermissions } from './permissions/product.permission';
 import { categoryPermissions } from './permissions/category.permission';
 import { orderPermissions } from './permissions/order.permission';
 import { paymentPermissions } from './permissions/payment.permission';
+import { voucherPermissions } from './permissions/voucher.permission';
+import { bannerPermissions } from './permissions/banner.permission';
 
 const permissions = [
   ...userPermissions,
@@ -12,6 +14,8 @@ const permissions = [
   ...categoryPermissions,
   ...orderPermissions,
   ...paymentPermissions,
+  ...voucherPermissions,
+  ...bannerPermissions,
 ];
 
 export async function permissionSeed() {

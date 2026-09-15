@@ -3,7 +3,7 @@
 #
 # Build (đứng trong thư mục shoppe-mini):
 #   docker build -t shoppe-api .
-# Chạy (cần DATABASE_URL trỏ tới host Postgres, không dùng localhost nếu DB ở container khác):
+# Chạy (JWT_SECRET và các secret không nằm trong image — bắt buộc --env-file):
 #   docker run --rm -p 3001:3001 --env-file .env shoppe-api
 
 # ---- Stage 1: cài dependency + compile TypeScript ----

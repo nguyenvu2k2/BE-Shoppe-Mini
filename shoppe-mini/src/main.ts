@@ -5,6 +5,7 @@ import { AppModule } from './app.module';
 import { ValidationPipe } from '@nestjs/common';
 import cookieParser from 'cookie-parser';
 import { SocketIoAdapter } from './modules/realtime/socket-io.adapter';
+import { resolveCorsOrigins } from './common/config/load-env';
 
 async function bootstrap() {
   const app = await NestFactory.create(AppModule);
@@ -22,7 +23,7 @@ async function bootstrap() {
   SwaggerModule.setup('api', app, document);
   app.use(cookieParser());
   app.enableCors({
-    origin: process.env.FRONTEND_URL ?? 'http://localhost:3000',
+    origin: resolveCorsOrigins(),
     credentials: true,
   });
   const port = Number(process.env.PORT ?? 3001);

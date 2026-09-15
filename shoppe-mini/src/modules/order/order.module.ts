@@ -1,5 +1,6 @@
 import { Module } from '@nestjs/common';
 import { PaymentModule } from '../payment/payment.module';
+import { VoucherModule } from '../voucher/voucher.module';
 import { OrderController } from './order.controller';
 import { OrderService } from './order.service';
 
@@ -8,7 +9,7 @@ import { OrderService } from './order.service';
  * PrismaService và JwtService đã global nên không cần import thêm.
  */
 @Module({
-  imports: [PaymentModule],
+  imports: [PaymentModule, VoucherModule],
   controllers: [OrderController],
   providers: [OrderService],
   exports: [OrderService],

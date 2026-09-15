@@ -1,0 +1,33 @@
+model Voucher {
+  id Int @id @default(autoincrement())
+
+  /// Stored uppercase, e.g. WELCOME10.
+  code        String  @unique
+  name        String
+  description String?
+
+  type  VoucherType
+  /// PERCENT: 10 = 10%. FIXED: VND amount.
+  value Decimal     @db.Decimal(12, 2)
+
+  minOrderAmount Decimal  @default(0) @map("min_order_amount") @db.Decimal(12, 2)
+  /// Cap for PERCENT only. Null = no cap.
+  maxDiscount    Decimal? @map("max_discount") @db.Decimal(12, 2)
+
+  usageLimit   Int? @map("usage_limit")
+  usedCount    Int  @default(0) @map("used_count")
+  perUserLimit Int  @default(1) @map("per_user_limit")
+
+  startsAt DateTime? @map("starts_at")
+  endsAt   DateTime? @map("ends_at")
+  isActive Boolean   @default(true) @map("is_active")
+
+  usages VoucherUsage[]
+  orders Order[]
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@index([isActive, startsAt, endsAt])
+  @@map("vouchers")
+}

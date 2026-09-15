@@ -2,6 +2,7 @@ import { INestApplication } from '@nestjs/common';
 import { IoAdapter } from '@nestjs/platform-socket.io';
 import type { Server as HttpServer } from 'http';
 import { Server, ServerOptions } from 'socket.io';
+import { resolveCorsOrigins } from '../../common/config/load-env';
 
 /**
  * NestFactory.create() returns a Proxy, so `new IoAdapter(app)` does not
@@ -19,7 +20,7 @@ export class SocketIoAdapter extends IoAdapter {
       ...options,
       path: '/socket.io',
       cors: {
-        origin: process.env.FRONTEND_URL ?? 'http://localhost:3000',
+        origin: resolveCorsOrigins(),
         credentials: true,
       },
     });

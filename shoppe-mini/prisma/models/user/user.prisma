@@ -19,6 +19,7 @@ model User {
   addresses           Address[]
   cart                Cart?
   orders              Order[]
+  voucherUsages       VoucherUsage[]
   refreshTokens       RefreshToken[]       @relation("UserRefreshTokens")
   sessions            Session[]            @relation("UserSessions")
   passwordResetTokens PasswordResetToken[] @relation("UserPasswordResetTokens")

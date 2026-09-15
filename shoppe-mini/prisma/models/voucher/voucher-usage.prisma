@@ -1,0 +1,20 @@
+model VoucherUsage {
+  id Int @id @default(autoincrement())
+
+  voucherId Int
+  voucher   Voucher @relation(fields: [voucherId], references: [id], onDelete: Restrict)
+
+  userId Int
+  user   User @relation(fields: [userId], references: [id], onDelete: Restrict)
+
+  /// One order ↔ one usage. Unique so a checkout cannot apply two codes.
+  orderId Int   @unique @map("order_id")
+  order   Order @relation(fields: [orderId], references: [id], onDelete: Cascade)
+
+  discountAmount Decimal @map("discount_amount") @db.Decimal(12, 2)
+
+  createdAt DateTime @default(now()) @map("created_at")
+
+  @@index([voucherId, userId])
+  @@map("voucher_usages")
+}
